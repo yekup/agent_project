@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>问答 - 网文图谱分析系统</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gray-900 text-white min-h-screen flex flex-col">
+    <nav class="bg-gray-800 border-b border-gray-700 px-6 py-3 flex items-center">
+        <div class="flex items-center space-x-6">
+            <h1 class="text-xl font-bold">📖 网文图谱</h1>
+            <a href="/" class="text-gray-400 hover:text-white">首页</a>
+            <a href="/upload" class="text-gray-400 hover:text-white">上传</a>
+            <a href="/graph" class="text-gray-400 hover:text-white">图谱</a>
+            <a href="/chat" class="text-blue-400">问答</a>
+        </div>
+    </nav>
+    <main class="flex-1 flex flex-col p-6 max-w-4xl mx-auto w-full">
+        <!-- 进度提示 -->
+        <div id="progressBar" class="bg-gray-700 rounded-full h-2 mb-4 hidden">
+            <div id="progressFill" class="bg-blue-600 h-2 rounded-full transition-all" style="width:0%"></div>
+        </div>
+        <p id="progressText" class="text-gray-500 text-xs mb-2 hidden"></p>
+
+        <div id="messages" class="flex-1 overflow-y-auto space-y-4 mb-4"></div>
+        <div class="flex space-x-2">
+            <input type="text" id="queryInput" placeholder="输入问题，如「赵玖在绍宋前期的形象变化」" class="flex-1 px-4 py-2 bg-gray-700 text-white rounded border border-gray-600 focus:border-blue-500 outline-none">
+            <button onclick="sendQuery()" class="px-6 py-2 bg-blue-600 hover:bg-blue-700 rounded font-medium">发送</button>
+        </div>
+    </main>
+    <script>
+        document.getElementById('messages').innerHTML = '<div class="text-center text-gray-500 py-8">💡 输入问题开始分析网文人物关系和情节</div>';
+        document.getElementById('queryInput').addEventListener('keydown', e => { if(e.key === 'Enter') sendQuery(); });
+
+        function showProgress(msg, pct) {
+            document.getElementById('progressBar').classList.remove('hidden');
+            document.getElementById('progressText').classList.remove('hidden');
+            document.getElementById('progressText').textContent = msg;
+            document.getElementById('progressFill').style.width = pct + '%';
+        }
+
+        function hideProgress() {
+            document.getElementById('progressBar').classList.add('hidden');
+            document.getElementById('progressText').classList.add('hidden');
+        }
+
+        async function sendQuery() {
+            const input = document.getElementById('queryInput');
+            const query = input.value.trim();
+            if (!query) return;
+            input.value = '';
+
+            addMessage('user', query);
+            addMessage('ai', '⏳ 分析中...');
+            showProgress('多 Agent 协作分析中...', 10);
+
+            try {
+                const resp = await fetch('/api/ask', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({query})
+                });
+                const data = await resp.json();
+                const msgs = document.getElementById('messages');
+                msgs.lastChild.remove();
+                addMessage('ai', data.report || '暂无结果');
+                hideProgress();
+            } catch(e) {
+                const msgs = document.getElementById('messages');
+                msgs.lastChild.remove();
+                addMessage('ai', '❌ 请求失败: ' + e.message);
+                hideProgress();
+            }
+        }
+
+        function addMessage(role, content) {
+            const div = document.createElement('div');
+            div.className = role === 'user' ? 'text-right' : 'text-left';
+            div.innerHTML = `<div class="inline-block max-w-[80%] p-3 rounded-lg ${role === 'user' ? 'bg-blue-600 text-white' : 'bg-gray-700 text-gray-200'} whitespace-pre-wrap">${content}</div>`;
+            document.getElementById('messages').appendChild(div);
+            div.scrollIntoView();
+        }
+    </script>
+</body>
+</html>

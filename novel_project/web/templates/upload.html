@@ -1,0 +1,109 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>上传 - 网文图谱分析系统</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gray-900 text-white min-h-screen">
+    <nav class="bg-gray-800 border-b border-gray-700 px-6 py-3 flex items-center">
+        <div class="flex items-center space-x-6">
+            <h1 class="text-xl font-bold">📖 网文图谱</h1>
+            <a href="/" class="text-gray-400 hover:text-white">首页</a>
+            <a href="/upload" class="text-blue-400">上传</a>
+            <a href="/graph" class="text-gray-400 hover:text-white">图谱</a>
+            <a href="/chat" class="text-gray-400 hover:text-white">问答</a>
+        </div>
+    </nav>
+    <main class="p-6 max-w-4xl mx-auto">
+        <h2 class="text-2xl font-bold mb-4">上传网文</h2>
+
+        <!-- 步骤 1：选择文件 -->
+        <div id="step1" class="bg-gray-800 p-6 rounded-lg mb-4">
+            <h3 class="text-lg font-bold mb-3">1️⃣ 选择 TXT 文件</h3>
+            <div class="border-2 border-dashed border-gray-600 rounded-lg p-8 text-center hover:border-blue-500 cursor-pointer" onclick="document.getElementById('fileInput').click()">
+                <p class="text-gray-400" id="fileLabel">点击选择或拖拽 .txt 文件到此处</p>
+                <input type="file" id="fileInput" accept=".txt" class="hidden" onchange="onFileSelect(event)">
+            </div>
+            <button id="uploadBtn" onclick="uploadFile()" disabled class="mt-4 px-6 py-2 bg-blue-600 rounded hover:bg-blue-700 disabled:opacity-50">上传并清洗</button>
+            <div id="uploadProgress" class="mt-2 text-gray-400 text-sm hidden"></div>
+        </div>
+
+        <!-- 步骤 2：选择章节数 -->
+        <div id="step2" class="bg-gray-800 p-6 rounded-lg mb-4 hidden">
+            <h3 class="text-lg font-bold mb-3">2️⃣ 选择要编译的章节</h3>
+            <p class="text-gray-400 mb-3">共 <span id="totalChapters" class="text-white font-bold">0</span> 章</p>
+            <div class="flex space-x-3">
+                <input type="number" id="chapterCount" placeholder="输入章数" class="w-32 px-3 py-2 bg-gray-700 text-white rounded border border-gray-600" min="1">
+                <button onclick="buildChapters(document.getElementById('chapterCount').value)" class="px-4 py-2 bg-green-600 rounded hover:bg-green-700">编译前 N 章</button>
+                <button onclick="buildChapters(-1)" class="px-4 py-2 bg-blue-600 rounded hover:bg-blue-700">编译全部</button>
+            </div>
+        </div>
+
+        <!-- 步骤 3：进度 -->
+        <div id="step3" class="bg-gray-800 p-6 rounded-lg mb-4 hidden">
+            <h3 class="text-lg font-bold mb-3">3️⃣ 编译进度</h3>
+            <div class="w-full bg-gray-700 rounded-full h-4 mb-2">
+                <div id="progressBar" class="bg-blue-600 h-4 rounded-full transition-all" style="width:0%"></div>
+            </div>
+            <p id="progressText" class="text-gray-400 text-sm">等待中...</p>
+        </div>
+    </main>
+    <script>
+        let currentFilename = '';
+
+        function onFileSelect(e) {
+            const file = e.target.files[0];
+            if (file) {
+                document.getElementById('fileLabel').textContent = file.name;
+                document.getElementById('uploadBtn').disabled = false;
+            }
+        }
+
+        async function uploadFile() {
+            const file = document.getElementById('fileInput').files[0];
+            if (!file) return;
+
+            document.getElementById('uploadProgress').classList.remove('hidden');
+            document.getElementById('uploadProgress').textContent = '上传并清洗中...';
+            document.getElementById('uploadBtn').disabled = true;
+
+            const formData = new FormData();
+            formData.append('file', file);
+
+            const resp = await fetch('/api/upload', { method: 'POST', body: formData });
+            const data = await resp.json();
+
+            if (resp.ok) {
+                currentFilename = data.filename;
+                document.getElementById('totalChapters').textContent = data.total_chapters;
+                document.getElementById('step2').classList.remove('hidden');
+                document.getElementById('uploadProgress').textContent = '✅ 清洗完成';
+            } else {
+                document.getElementById('uploadProgress').textContent = '❌ ' + data.detail;
+            }
+        }
+
+        async function buildChapters(chapters) {
+            document.getElementById('step3').classList.remove('hidden');
+            document.getElementById('progressText').textContent = chapters === -1 ? '开始全量编译...' : `开始编译前 ${chapters} 章...`;
+            document.getElementById('progressBar').style.width = '5%';
+
+            const resp = await fetch('/api/build', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({ filename: currentFilename, chapters: chapters })
+            });
+            const data = await resp.json();
+
+            if (resp.ok) {
+                document.getElementById('progressBar').style.width = '100%';
+                document.getElementById('progressText').textContent = `✅ 编译完成，共 ${data.total} 章`;
+            } else {
+                document.getElementById('progressText').textContent = '❌ 编译失败';
+            }
+        }
+    </script>
+</body>
+</html>

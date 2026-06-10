@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>网文图谱分析系统</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gray-900 text-white min-h-screen">
+    <nav class="bg-gray-800 border-b border-gray-700 px-6 py-3 flex items-center justify-between">
+        <div class="flex items-center space-x-6">
+            <h1 class="text-xl font-bold">📖 网文图谱</h1>
+            <a href="/" class="text-blue-400">首页</a>
+            <a href="/upload" class="text-gray-400 hover:text-white">上传</a>
+            <a href="/graph" class="text-gray-400 hover:text-white">图谱</a>
+            <a href="/chat" class="text-gray-400 hover:text-white">问答</a>
+        </div>
+    </nav>
+    <main class="p-6 max-w-6xl mx-auto">
+        <h2 class="text-2xl font-bold mb-2">网文 GraphRAG 分析系统</h2>
+        <p class="text-gray-400 mb-6">多 Agent 协作 + 知识图谱 + RAG 检索</p>
+
+        <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
+            <a href="/upload" class="bg-gray-800 p-6 rounded-lg hover:bg-gray-750 transition border border-gray-700">
+                <div class="text-3xl mb-2">📤</div>
+                <h3 class="font-bold">上传小说</h3>
+                <p class="text-sm text-gray-400">TXT 上传 → 自动清洗 → 选择章节编译</p>
+            </a>
+            <a href="/graph" class="bg-gray-800 p-6 rounded-lg hover:bg-gray-750 transition border border-gray-700">
+                <div class="text-3xl mb-2">🕸️</div>
+                <h3 class="font-bold">知识图谱</h3>
+                <p class="text-sm text-gray-400">人物关系可视化浏览</p>
+            </a>
+            <a href="/chat" class="bg-gray-800 p-6 rounded-lg hover:bg-gray-750 transition border border-gray-700">
+                <div class="text-3xl mb-2">💬</div>
+                <h3 class="font-bold">智能问答</h3>
+                <p class="text-sm text-gray-400">多 Agent 分析人物关系</p>
+            </a>
+            <div class="bg-gray-800 p-6 rounded-lg border border-gray-700">
+                <div class="text-3xl mb-2">📊</div>
+                <h3 class="font-bold">已入库</h3>
+                <p class="text-sm text-gray-400" id="statusInfo">加载中...</p>
+            </div>
+        </div>
+
+        <div class="bg-gray-800 p-6 rounded-lg">
+            <h3 class="text-lg font-bold mb-4">使用流程</h3>
+            <div class="space-y-2 text-gray-300">
+                <p>1️⃣ <b>上传</b> TXT 网文 → 自动清洗去杂质</p>
+                <p>2️⃣ <b>选择</b> 编译前 N 章或全量 → LLM 逐章提取人物/事件/关系</p>
+                <p>3️⃣ <b>浏览</b> 人物关系图谱</p>
+                <p>4️⃣ <b>提问</b> 多 Agent 协作分析</p>
+            </div>
+        </div>
+    </main>
+    <script>
+        fetch('/api/search', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({query:'赵玖', top_k:1})})
+            .then(r => r.json()).then(() => document.getElementById('statusInfo').textContent = '数据就绪')
+            .catch(() => document.getElementById('statusInfo').textContent = '请先上传数据');
+    </script>
+</body>
+</html>
