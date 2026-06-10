@@ -1,0 +1,310 @@
+{
+  "nodes": [
+    {
+      "name": "赵玖（穿越后的赵构）",
+      "role": "主角",
+      "mention_count": 1,
+      "chapter_count": 1
+    },
+    {
+      "name": "康履",
+      "role": "配角",
+      "mention_count": 4,
+      "chapter_count": 4
+    },
+    {
+      "name": "杨沂中",
+      "role": "配角",
+      "mention_count": 5,
+      "chapter_count": 5
+    },
+    {
+      "name": "潘妃",
+      "role": "路人",
+      "mention_count": 3,
+      "chapter_count": 3
+    },
+    {
+      "name": "太后",
+      "role": "路人",
+      "mention_count": 1,
+      "chapter_count": 1
+    },
+    {
+      "name": "赵玖",
+      "role": "主角",
+      "mention_count": 4,
+      "chapter_count": 4
+    },
+    {
+      "name": "壮汉士卒",
+      "role": "配角",
+      "mention_count": 1,
+      "chapter_count": 1
+    },
+    {
+      "name": "插嘴士卒",
+      "role": "路人",
+      "mention_count": 1,
+      "chapter_count": 1
+    },
+    {
+      "name": "完颜阿骨打",
+      "role": "提及",
+      "mention_count": 1,
+      "chapter_count": 1
+    },
+    {
+      "name": "契丹皇帝",
+      "role": "提及",
+      "mention_count": 1,
+      "chapter_count": 1
+    },
+    {
+      "name": "奚人皇帝",
+      "role": "提及",
+      "mention_count": 1,
+      "chapter_count": 1
+    },
+    {
+      "name": "郭药师",
+      "role": "提及",
+      "mention_count": 1,
+      "chapter_count": 1
+    },
+    {
+      "name": "刘晏",
+      "role": "提及",
+      "mention_count": 3,
+      "chapter_count": 3
+    },
+    {
+      "name": "刘太尉",
+      "role": "提及",
+      "mention_count": 1,
+      "chapter_count": 1
+    },
+    {
+      "name": "宗泽",
+      "role": "提及",
+      "mention_count": 3,
+      "chapter_count": 3
+    },
+    {
+      "name": "岳飞",
+      "role": "提及",
+      "mention_count": 3,
+      "chapter_count": 3
+    },
+    {
+      "name": "黄潜善",
+      "role": "路人",
+      "mention_count": 3,
+      "chapter_count": 3
+    },
+    {
+      "name": "汪伯彦",
+      "role": "路人",
+      "mention_count": 3,
+      "chapter_count": 3
+    },
+    {
+      "name": "李纲",
+      "role": "被提及人物",
+      "mention_count": 2,
+      "chapter_count": 2
+    },
+    {
+      "name": "陈东",
+      "role": "被提及人物",
+      "mention_count": 2,
+      "chapter_count": 2
+    },
+    {
+      "name": "完颜娄室",
+      "role": "被提及人物",
+      "mention_count": 1,
+      "chapter_count": 1
+    },
+    {
+      "name": "金兀术",
+      "role": "被提及人物",
+      "mention_count": 1,
+      "chapter_count": 1
+    },
+    {
+      "name": "王渊",
+      "role": "提及",
+      "mention_count": 2,
+      "chapter_count": 2
+    },
+    {
+      "name": "张俊",
+      "role": "提及",
+      "mention_count": 1,
+      "chapter_count": 1
+    },
+    {
+      "name": "宋奇愈",
+      "role": "被提及人物",
+      "mention_count": 1,
+      "chapter_count": 1
+    },
+    {
+      "name": "王及之",
+      "role": "被提及人物",
+      "mention_count": 1,
+      "chapter_count": 1
+    }
+  ],
+  "edges": [
+    {
+      "source": "康履",
+      "target": "赵玖",
+      "relation": "主仆，赵玖对康履冷淡疏离，康履忠心但无奈。",
+      "weight": 3,
+      "chapters": [
+        "第一章 明道宫",
+        "第四章 英雄气",
+        "第五章 会议"
+      ]
+    },
+    {
+      "source": "康履",
+      "target": "潘妃",
+      "relation": "潘妃通过康履传话，康履代为转达。",
+      "weight": 1,
+      "chapters": [
+        "第一章 明道宫"
+      ]
+    },
+    {
+      "source": "康履",
+      "target": "黄潜善",
+      "relation": "内侍与宰相结成同盟，共同应对皇帝突发旨意，事后密议串联。",
+      "weight": 1,
+      "chapters": [
+        "第五章 会议"
+      ]
+    },
+    {
+      "source": "康履",
+      "target": "汪伯彦",
+      "relation": "政治盟友，在对抗皇帝召回主战派一事上立场一致。",
+      "weight": 1,
+      "chapters": [
+        "第五章 会议"
+      ]
+    },
+    {
+      "source": "康履",
+      "target": "王渊",
+      "relation": "康履拉拢王渊，形成行在实权派的小圈子。",
+      "weight": 1,
+      "chapters": [
+        "第五章 会议"
+      ]
+    },
+    {
+      "source": "杨沂中",
+      "target": "赵玖",
+      "relation": "杨沂中已暗中反水，成为赵玖在禁中的武力支撑，但表面仍向旧臣汇报。",
+      "weight": 1,
+      "chapters": [
+        "第五章 会议"
+      ]
+    },
+    {
+      "source": "杨沂中",
+      "target": "岳飞",
+      "relation": "旧识，曾同饮为同僚",
+      "weight": 1,
+      "chapters": [
+        "第三章 朕的心腹都在哪里？"
+      ]
+    },
+    {
+      "source": "杨沂中",
+      "target": "刘晏",
+      "relation": "杨沂中代为通报并看守刘晏，无直接冲突，本章为间接协助赵玖安抚刘晏。",
+      "weight": 1,
+      "chapters": [
+        "第四章 英雄气"
+      ]
+    },
+    {
+      "source": "潘妃",
+      "target": "赵玖",
+      "relation": "夫妻（名义上），赵玖刻意回避不见。",
+      "weight": 1,
+      "chapters": [
+        "第一章 明道宫"
+      ]
+    },
+    {
+      "source": "赵玖",
+      "target": "岳飞",
+      "relation": "赵玖慕名寻找但尚未得见的抗金将领",
+      "weight": 2,
+      "chapters": [
+        "第二章 赤心队",
+        "第三章 朕的心腹都在哪里？"
+      ]
+    },
+    {
+      "source": "赵玖",
+      "target": "刘晏",
+      "relation": "君主宽宥部将，刘晏请罪被赦免",
+      "weight": 2,
+      "chapters": [
+        "第三章 朕的心腹都在哪里？",
+        "第四章 英雄气"
+      ]
+    },
+    {
+      "source": "赵玖",
+      "target": "黄潜善",
+      "relation": "皇帝与宰相的正面冲突，黄潜善因李纲事恐慌而反对，最终被迫妥协。",
+      "weight": 1,
+      "chapters": [
+        "第五章 会议"
+      ]
+    },
+    {
+      "source": "赵玖",
+      "target": "汪伯彦",
+      "relation": "君臣意见相左，汪伯彦以军情为由婉拒皇帝提议，保持沉默但关键时出言反对。",
+      "weight": 1,
+      "chapters": [
+        "第五章 会议"
+      ]
+    },
+    {
+      "source": "赵玖",
+      "target": "王渊",
+      "relation": "王渊附和康履等人，与皇帝立场相左。",
+      "weight": 1,
+      "chapters": [
+        "第五章 会议"
+      ]
+    },
+    {
+      "source": "赵玖",
+      "target": "李纲",
+      "relation": "赵玖欲召回李纲以制衡旧臣，但因阻力未成，君臣关系隔阂犹存。",
+      "weight": 1,
+      "chapters": [
+        "第五章 会议"
+      ]
+    },
+    {
+      "source": "赵玖",
+      "target": "宗泽",
+      "relation": "赵玖视宗泽为制衡力量，尝试召回但被阻，对宗泽的信任与旧臣的排斥形成对比。",
+      "weight": 1,
+      "chapters": [
+        "第五章 会议"
+      ]
+    }
+  ]
+}
