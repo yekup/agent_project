@@ -1,0 +1,27 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# 环境变量
+.env
+
+# 编辑器
+.vscode/
+.idea/
+
+# 原始 TXT（版权相关）
+data/raw/*.txt
+
+# 向量数据库
+*.sqlite3
+vectordb/
+
+# 可重建的数据
+data/memory/
+data/pipeline/
+
+# 系统文件
+Thumbs.db
+.DS_Store
+
