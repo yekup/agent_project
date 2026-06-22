@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+
+# Environment
+.env
+*.env.local
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Data artifacts (large generated files)
+novel_project/data/raw/*.txt
+novel_project/data/processed/*.txt
+novel_project/data/processed/*_clean.txt
+
+# Logs
+*.log
+data/logs/
+
+# Neo4j import cypher scripts (regeneratable)
+*.cypher

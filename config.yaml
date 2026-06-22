@@ -1,0 +1,79 @@
+# Novel-GraphRAG 配置文件
+# 支持环境变量覆盖: ${ENV_VAR:-default_value}
+
+app:
+  name: "Novel-GraphRAG"
+  version: "0.2.0"
+  debug: false
+  host: "0.0.0.0"
+  port: 8000
+
+llm:
+  primary:
+    provider: deepseek
+    model: ${LLM_MODEL:-deepseek-chat}
+    api_key: ${DEEPSEEK_API_KEY:-}
+    base_url: ${LLM_BASE_URL:-https://api.deepseek.com}
+    timeout: 60
+  fallback:
+    provider: deepseek
+    model: "deepseek-chat"
+  strategy: "fallback"  # raise | degrade | fallback
+  budget:
+    max_tokens_per_book: 5000000
+    max_cost_usd: 10.0
+
+auth:
+  jwt_secret: ${JWT_SECRET:-default-dev-secret}
+  jwt_algorithm: HS256
+  jwt_expire_hours: 72
+  roles:
+    - admin
+    - editor
+    - viewer
+    - api
+
+storage:
+  neo4j:
+    uri: ${NEO4J_URI:-bolt://localhost:7687}
+    user: neo4j
+    password: ${NEO4J_PASSWORD:-novelgraphrag2024}
+  chromadb:
+    host: localhost
+    port: 8001
+  redis:
+    url: ${REDIS_URL:-redis://localhost:6379/0}
+
+security:
+  upload_allowed_extensions:
+    - .txt
+  upload_max_size_mb: 100
+  rate_limit:
+    enabled: true
+    requests_per_minute: 60
+    burst: 100
+  cors_origins:
+    - "*"
+
+logs:
+  level: INFO
+  format: json  # json | text
+  rotation: "1 day"
+  retention: "30 days"
+  audit_log_path: "data/logs/audit.log"
+
+compilation:
+  default_batch_size: 5
+  default_delay_sec: 2
+  chapter_router:
+    enabled: true
+    pro_threshold: 0.6
+    skip_threshold: 0.2
+  dedup:
+    enabled: true
+    simhash_threshold: 3
+    minhash_threshold: 0.85
+
+eval:
+  faithfulness_threshold: 0.75
+  golden_dataset_path: "data/eval/golden/{novel}.json"

@@ -1,109 +1,55 @@
 # 📖 网文 GraphRAG + 多 Agent 协作分析系统
-# Novel GraphRAG + Multi-Agent Analysis System
 
-基于知识图谱与多 Agent 协作的网络小说智能分析系统。上传网文 TXT → 自动清洗 → LLM 逐章编译 Wiki → 构建人物关系图谱 → 多 Agent 协作回答分析问题。
+基于知识图谱与多 Agent 协作的网络小说智能分析系统。
 
-> An intelligent novel analysis system powered by Knowledge Graph and Multi-Agent collaboration. Upload TXT → Auto-clean → LLM chapter-by-chapter Wiki compilation → Character relationship graph → Multi-Agent Q&A.
+```
+上传 TXT → 自动清洗 → LLM 逐章编译 Wiki → 构建人物关系图谱 → 多 Agent 问答
+```
 
----
-
-## ✨ 功能 / Features
-
-| 功能 | 说明 |
-|------|------|
-| 📤 **上传清洗 / Upload & Clean** | 上传 TXT 文件，自动去除广告、作者话、打赏名单 / Upload TXT, auto-remove ads and author notes |
-| 🧠 **Wiki 编译 / Wiki Compilation** | LLM 逐章提取人物、事件、关系，生成结构化摘要（支持断点续传）/ LLM extracts characters, events, relationships per chapter with checkpoint resume |
-| 🕸️ **知识图谱 / Knowledge Graph** | 跨章合并人物实体，NetworkX + vis-network 力导向图可视化 / Cross-chapter entity merging, force-directed graph visualization |
-| 🔍 **三级检索 / 3-Level Retrieval** | Wiki → 知识图谱 → 原文，动态 top_k，自动适配问题粒度 / Wiki → Graph → Original text with dynamic top-k |
-| 🤖 **多 Agent 协作 / Multi-Agent** | Coordinator 意图识别 → Researcher 检索 → Writer 写报告 → Reviewer 审核 / Intent detection → Research → Report writing → Review |
-| 💬 **智能问答 / Smart Q&A** | 支持人物分析、关系分析、情节梳理、全书总结 / Character analysis, relationship analysis, plot summary, book overview |
-
-## 🛠 技术栈 / Tech Stack
-
-| Layer | Technology |
-|-------|-----------|
-| Backend | Python 3.10, **FastAPI**, Uvicorn |
-| Frontend | Jinja2, **Tailwind CSS**, vis-network |
-| LLM | **DeepSeek V4 Pro** |
-| Vector DB | **ChromaDB**, BAAI/bge-small-zh-v1.5 |
-| Graph | **NetworkX** |
-| Auth | JWT, 4-role permission system |
-| Deploy | Nginx, systemd, **Let's Encrypt SSL** |
-
-## 🚀 快速开始 / Quick Start
+## 快速启动
 
 ```bash
-# 1. Clone
-git clone https://github.com/yekup/agent_project.git
-cd agent_project
+# 安装依赖
+pip install -r requirements.txt
 
-# 2. Install dependencies
-pip install openai chromadb sentence-transformers networkx fastapi uvicorn jinja2 python-multipart aiofiles
+# 设置 API Key
+set DEEPSEEK_API_KEY=your-key
 
-# 3. Set API Key
-export DEEPSEEK_API_KEY=your-key
-
-# 4. Run
+# 启动
 python run.py
 ```
 
-Open http://localhost:8000
+访问 http://localhost:8000
 
-## 📊 数据 / Data
+## 新增功能（2026-06-23 更新）
 
-| Novel | Chapters | Status |
-|-------|----------|--------|
-| 《绍宋》/ Shaosong | 438 | ✅ Complete (759 characters, 1017 relations) |
-| 《斗破苍穹》/ Battle Through the Heavens | 1649 | ⏳ Compiling |
-| 《神印王座》/ Throne of the Divine Seal | 876 | ⏳ Pending |
+| 功能 | 入口 | 说明 |
+|------|------|------|
+| MCP Server | `python mcp_server.py` | 5 个 Tool 供 Cursor/Claude Desktop 调用 |
+| RAG 评估 | `scripts/rag_evaluate.py` | LLM-as-Judge + 黄金测试集 + 回归门禁 |
+| 分级路由 + 去重 | `core/chapter_router.py` | 实体密度评分 + SimHash/MinHash 去重 |
+| 安全加固 | `core/security.py` | JWT + 权限 + 限流 + 文件校验 + 日志脱敏 |
+| Neo4j 迁移 | `scripts/migrate_to_neo4j.py` | NetworkX → Neo4j 时序图谱 |
+| 生态导出 | `core/exporter.py` | Obsidian / EPUB / Excel / CSV / MD |
+| 配置管理 | `config.yaml` | 统一配置 + 环境变量覆盖 |
+| 预留接口 | `interfaces/` | 6 大功能接口，标注所需资源 |
 
-> Raw TXT files are not included. Use `scripts/clean_novel.py` to clean your own files.
-
-## 📁 项目结构 / Structure
+## 项目结构
 
 ```
 novel_project/
-├── run.py                     # Entry point
-├── core/
-│   ├── chapter_parser.py      # Wiki compilation (checkpoint, volume detection)
-│   ├── knowledge_graph.py     # Knowledge graph building
-│   ├── retriever.py           # 3-level retrieval
-│   ├── memory.py              # Session memory system
-│   ├── pipeline.py            # Async build pipeline
-│   └── agents/
-│       ├── coordinator.py     # Intent detection + task decomposition
-│       ├── researcher.py      # Multi-source retrieval
-│       ├── writer.py          # Report generation
-│       └── reviewer.py        # Quality scoring + feedback
-├── web/
-│   ├── app.py                 # FastAPI app
-│   ├── routes/                # API routes
-│   ├── templates/             # Jinja2 templates
-│   └── static/                # Static files (CSS, JS)
-├── scripts/
-│   ├── clean_novel.py         # TXT cleaning tool
-│   └── test_agents.py         # Agent tests
-└── data/
-    ├── raw/                   # Raw TXT files
-    ├── processed/             # Cleaned JSON
-    └── wiki/                  # Compiled Wiki + graphs
+├── run.py              # 启动入口
+├── mcp_server.py       # MCP Server
+├── config.yaml         # 配置文件
+├── core/               # 核心模块
+│   ├── agents/         # 多 Agent 系统
+│   ├── llm.py          # LLM 调用层
+│   ├── chapter_router.py  # 分级路由
+│   ├── security.py     # 安全模块
+│   ├── exporter.py     # 导出模块
+│   └── ...
+├── interfaces/         # 预留接口
+├── scripts/            # 工具脚本
+├── web/                # FastAPI Web
+└── data/               # 数据目录
 ```
-
-## 🌐 API
-
-| Method | Path | Description |
-|--------|------|-------------|
-| POST | `/api/ask` | Multi-Agent Q&A |
-| POST | `/api/search` | 3-level search |
-| GET | `/api/graph` | Get graph data (`?novel=` param) |
-| GET | `/api/novels` | List available novels |
-| POST | `/api/upload` | Upload TXT |
-| POST | `/api/build` | Start compilation |
-
-## 🔗 链接 / Links
-
-- **GitHub**: https://github.com/yekup/agent_project
-
-## 📄 许可证 / License
-
-MIT
