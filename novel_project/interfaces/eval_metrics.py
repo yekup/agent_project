@@ -161,7 +161,7 @@ class FaithfulnessMetric(NovelEvalMetric):
     @staticmethod
     def _default_judge(prompt: str) -> str:
         """使用项目现有 LLM 调用"""
-        from agent_project.core.llm import call_llm
+        from core.llm import call_llm
         return call_llm([{"role": "user", "content": prompt}])
 
     def score(self, sample: EvalSample) -> MetricResult:

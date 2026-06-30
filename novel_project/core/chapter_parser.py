@@ -15,7 +15,7 @@ BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, BASE_DIR)
 sys.path.insert(0, os.path.dirname(BASE_DIR)) #找到agent_project的父目录
 
-from agent_project.core.llm import call_llm
+from core.llm import call_llm
 #LLM编译prompt
 CHAPTER_WIKI_PROMPT = """你是一个网络小说分析专家。请分析以下章节内容，提取结构化信息。
 

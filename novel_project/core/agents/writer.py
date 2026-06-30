@@ -11,7 +11,7 @@ BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__fil
 sys.path.insert(0, BASE_DIR)
 sys.path.insert(0, os.path.dirname(BASE_DIR))
 
-from agent_project.core.llm import call_llm
+from core.llm import call_llm
 
 
 WRITER_PROMPT = """你是一个网文分析专家。请根据 Researcher 提供的资料，写一份分析报告。

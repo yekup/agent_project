@@ -273,7 +273,7 @@ class NovelRetriever:
         # 组装摘要
         summary_parts = []
         if wiki_results:
-            chapters = [w["chapter_title"] for w in wiki_results]
+            chapters = [w.get("chapter_title") or w.get("title", "") for w in wiki_results]
             summary_parts.append(f"相关章节：{'、'.join(chapters)}")
         if graph_results["matched_nodes"]:
             nodes = graph_results["matched_nodes"]

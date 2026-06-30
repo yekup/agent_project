@@ -165,7 +165,7 @@ async def list_novels():
 
 @router.get("/graph")
 async def get_graph(novel: str = ""):
-    """获取知识图谱数据，指定 novel 参数可切换书籍"""
+    """获取知识图谱数据，指定 novel 参数可切换书籍（含自适应布局参数）"""
     if not novel:
         novels = await list_novels()
         return {"nodes": [], "edges": [], "novels": novels}
@@ -175,7 +175,61 @@ async def get_graph(novel: str = ""):
         return {"nodes": [], "edges": [], "error": f"图谱未构建，请先上传并编译"}
 
     with open(graph_path, "r", encoding="utf-8") as f:
-        return json.load(f)
+        data = json.load(f)
+
+    # 自适应布局参数
+    n = len(data.get("nodes", []))
+    e = len(data.get("edges", []))
+    density = e / max(n * (n - 1) / 2, 1)
+
+    # 节点斥力: 大图需要极强斥力
+    repulsion = int(min(100000 * (max(n, 10) / 100) ** 2.0, 3000000))
+
+    # 重力: 大图需要极低重力
+    gravity = round(max(0.003, min(0.08, 0.04 * (100 / max(n, 10)) ** 0.4)), 4)
+
+    # 理想边长: 随 sqrt(N) 增长
+    ideal = int(min(100 + n ** 0.5 * 6, 300))
+
+    # 迭代次数: 随 N 增长但上限 3000
+    iterations = min(2000 + n * 2, 3000)
+
+    # 节点尺寸范围: 随 N 增长缩小
+    max_node_size = max(8, min(40, 55 - n * 0.02))
+    min_node_size = max(2, min(8, 5 - n * 0.002))
+
+    # 分离阈值: 与节点尺寸联动
+    sep_threshold = int(min(30 + n * 0.02, 60))
+
+    # 标签显隐阈值: 随 N 比例缩放
+    label_hide_full = max(0.05, 0.15 - n * 0.00008)
+    label_hide_core = max(0.10, 0.30 - n * 0.00015)
+
+    # 边上限: 按权重裁剪
+    edge_limit = min(300 + n * 0.3, 600)
+
+    # 最小关联度数
+    min_degree = max(2, min(5, int(n * 0.005)))
+
+    config = {
+        "nodeRepulsion": repulsion,
+        "gravity": gravity,
+        "idealEdgeLength": ideal,
+        "numIter": iterations,
+        "maxNodeSize": round(max_node_size, 1),
+        "minNodeSize": round(min_node_size, 1),
+        "sepThreshold": sep_threshold,
+        "labelHideFull": round(label_hide_full, 3),
+        "labelHideCore": round(label_hide_core, 3),
+        "edgeLimit": int(edge_limit),
+        "minDegree": min_degree,
+        "totalNodes": n,
+        "totalEdges": e,
+        "density": round(density, 6),
+    }
+
+    data["layout"] = config
+    return data
 
 
 @router.post("/index")

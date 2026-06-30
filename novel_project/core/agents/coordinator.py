@@ -13,7 +13,7 @@ BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__fil
 sys.path.insert(0, BASE_DIR)
 sys.path.insert(0, os.path.dirname(BASE_DIR))
 
-from agent_project.core.llm import call_llm
+from core.llm import call_llm
 
 # 意图识别 prompt
 INTENT_PROMPT = """判断用户的问题属于哪种类型。

@@ -159,7 +159,7 @@ class DeepSeekProvider(LLMProvider):
     def __init__(self, config: LLMConfig | None = None):
         super().__init__(config)
         # 复用项目现有 call_llm 函数
-        from agent_project.core.llm import call_llm
+        from core.llm import call_llm
         self._call_llm = call_llm
 
     def chat(
@@ -189,7 +189,7 @@ class DeepSeekProvider(LLMProvider):
 
     def chat_stream(self, messages, temperature=0.7, max_tokens=2048):
         # DeepSeek API 支持流式，复用现有逻辑
-        from agent_project.core.llm import call_llm_stream
+        from core.llm import call_llm_stream
         return call_llm_stream(messages, temperature=temperature)
 
     def health_check(self) -> dict:
