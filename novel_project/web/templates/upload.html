@@ -5,29 +5,59 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>上传 - 网文图谱分析系统</title>
     <script src="https://cdn.tailwindcss.com"></script>
+    <script src="/static/js/auth.js"></script>
 </head>
 <body class="bg-gray-900 text-white min-h-screen">
-    <nav class="bg-gray-800 border-b border-gray-700 px-6 py-3 flex items-center">
+    <nav class="bg-gray-800 border-b border-gray-700 px-6 py-3 flex items-center justify-between">
         <div class="flex items-center space-x-6">
             <h1 class="text-xl font-bold">📖 网文图谱</h1>
-            <a href="/" class="text-gray-400 hover:text-white">首页</a>
-            <a href="/upload" class="text-blue-400">上传</a>
-            <a href="/graph" class="text-gray-400 hover:text-white">图谱</a>
-            <a href="/chat" class="text-gray-400 hover:text-white">问答</a>
+            <a href="/" class="text-gray-400 hover:text-white" data-perm="page:dashboard">首页</a>
+            <a href="/upload" class="text-blue-400" data-perm="page:upload">上传</a>
+            <a href="/graph" class="text-gray-400 hover:text-white" data-perm="page:graph">图谱</a>
+            <a href="/chat" class="text-gray-400 hover:text-white" data-perm="page:chat">问答</a>
+        </div>
+        <div class="flex items-center space-x-3">
+            <span id="userInfo" class="text-sm text-gray-400"></span>
+            <a href="/login" id="loginBtn" class="text-sm text-blue-400">登录</a>
+            <button id="logoutBtn" onclick="AUTH.logout()" class="text-sm text-red-400 hidden">登出</button>
         </div>
     </nav>
     <main class="p-6 max-w-4xl mx-auto">
-        <h2 class="text-2xl font-bold mb-4">上传网文</h2>
+        <h2 class="text-2xl font-bold mb-4">上传文档</h2>
 
         <!-- 步骤 1：选择文件 -->
         <div id="step1" class="bg-gray-800 p-6 rounded-lg mb-4">
-            <h3 class="text-lg font-bold mb-3">1️⃣ 选择 TXT 文件</h3>
+            <h3 class="text-lg font-bold mb-3">1️⃣ 选择文件</h3>
+            <p class="text-gray-400 text-sm mb-3">支持格式: TXT（后续扩展 Word / PDF / Markdown）</p>
             <div class="border-2 border-dashed border-gray-600 rounded-lg p-8 text-center hover:border-blue-500 cursor-pointer" onclick="document.getElementById('fileInput').click()">
-                <p class="text-gray-400" id="fileLabel">点击选择或拖拽 .txt 文件到此处</p>
+                <p class="text-gray-400" id="fileLabel">点击选择或拖拽文件到此处</p>
                 <input type="file" id="fileInput" accept=".txt" class="hidden" onchange="onFileSelect(event)">
             </div>
-            <button id="uploadBtn" onclick="uploadFile()" disabled class="mt-4 px-6 py-2 bg-blue-600 rounded hover:bg-blue-700 disabled:opacity-50">上传并清洗</button>
+            <button id="uploadBtn" onclick="uploadFile()" disabled class="mt-4 px-6 py-2 bg-blue-600 rounded hover:bg-blue-700 disabled:opacity-50">上传并解析</button>
             <div id="uploadProgress" class="mt-2 text-gray-400 text-sm hidden"></div>
+        </div>
+
+        <!-- 步骤 1.5：解析结果 -->
+        <div id="step15" class="bg-gray-800 p-6 rounded-lg mb-4 hidden">
+            <h3 class="text-lg font-bold mb-3">📋 解析结果</h3>
+            <div class="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
+                <div class="bg-gray-700 rounded p-3 text-center">
+                    <div class="text-2xl font-bold text-blue-400" id="infoChapters">0</div>
+                    <div class="text-xs text-gray-400">章节</div>
+                </div>
+                <div class="bg-gray-700 rounded p-3 text-center">
+                    <div class="text-2xl font-bold text-green-400" id="infoChunks">0</div>
+                    <div class="text-xs text-gray-400">语义块</div>
+                </div>
+                <div class="bg-gray-700 rounded p-3 text-center">
+                    <div class="text-2xl font-bold text-yellow-400" id="infoFormat">-</div>
+                    <div class="text-xs text-gray-400">格式</div>
+                </div>
+                <div class="bg-gray-700 rounded p-3 text-center">
+                    <div class="text-2xl font-bold text-purple-400" id="infoSize">0MB</div>
+                    <div class="text-xs text-gray-400">大小</div>
+                </div>
+            </div>
         </div>
 
         <!-- 步骤 2：选择章节数 -->
@@ -66,7 +96,7 @@
             if (!file) return;
 
             document.getElementById('uploadProgress').classList.remove('hidden');
-            document.getElementById('uploadProgress').textContent = '上传并清洗中...';
+            document.getElementById('uploadProgress').textContent = '上传并解析中...';
             document.getElementById('uploadBtn').disabled = true;
 
             const formData = new FormData();
@@ -78,10 +108,18 @@
             if (resp.ok) {
                 currentFilename = data.filename;
                 document.getElementById('totalChapters').textContent = data.total_chapters;
+
+                // 显示解析结果
+                document.getElementById('infoChapters').textContent = data.total_chapters;
+                document.getElementById('infoChunks').textContent = data.total_chunks || '-';
+                document.getElementById('infoFormat').textContent = data.format || 'txt';
+                document.getElementById('infoSize').textContent = (data.file_info?.size_mb || 0).toFixed(2) + 'MB';
+
+                document.getElementById('step15').classList.remove('hidden');
                 document.getElementById('step2').classList.remove('hidden');
-                document.getElementById('uploadProgress').textContent = '✅ 清洗完成';
+                document.getElementById('uploadProgress').textContent = '✅ 解析完成 — ' + data.message;
             } else {
-                document.getElementById('uploadProgress').textContent = '❌ ' + data.detail;
+                document.getElementById('uploadProgress').textContent = '❌ ' + (data.detail || '上传失败');
             }
         }
 
@@ -101,7 +139,7 @@
                 document.getElementById('progressBar').style.width = '100%';
                 document.getElementById('progressText').textContent = `✅ 编译完成，共 ${data.total} 章`;
             } else {
-                document.getElementById('progressText').textContent = '❌ 编译失败';
+                document.getElementById('progressText').textContent = '❌ 编译失败: ' + (data.detail || '');
             }
         }
     </script>

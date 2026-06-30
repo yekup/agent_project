@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>知识图谱 - 网文图谱分析系统</title>
     <script src="https://cdn.tailwindcss.com"></script>
+    <script src="/static/js/auth.js"></script>
     <script src="/static/js/vis-network.min.js"></script>
     <link rel="stylesheet" href="/static/css/vis-network.min.css">
     <style>
@@ -14,13 +15,18 @@
     </style>
 </head>
 <body class="bg-gray-900 text-white min-h-screen">
-    <nav class="bg-gray-800 border-b border-gray-700 px-6 py-3 flex items-center">
+    <nav class="bg-gray-800 border-b border-gray-700 px-6 py-3 flex items-center justify-between">
         <div class="flex items-center space-x-6">
             <h1 class="text-xl font-bold">📖 网文图谱</h1>
-            <a href="/" class="text-gray-400 hover:text-white">首页</a>
-            <a href="/upload" class="text-gray-400 hover:text-white">上传</a>
-            <a href="/graph" class="text-blue-400">图谱</a>
-            <a href="/chat" class="text-gray-400 hover:text-white">问答</a>
+            <a href="/" class="text-gray-400 hover:text-white" data-perm="page:dashboard">首页</a>
+            <a href="/upload" class="text-gray-400 hover:text-white" data-perm="page:upload">上传</a>
+            <a href="/graph" class="text-blue-400" data-perm="page:graph">图谱</a>
+            <a href="/chat" class="text-gray-400 hover:text-white" data-perm="page:chat">问答</a>
+        </div>
+        <div class="flex items-center space-x-3">
+            <span id="userInfo" class="text-sm text-gray-400"></span>
+            <a href="/login" id="loginBtn" class="text-sm text-blue-400">登录</a>
+            <button id="logoutBtn" onclick="AUTH.logout()" class="text-sm text-red-400 hidden">登出</button>
         </div>
     </nav>
     <main class="p-6">

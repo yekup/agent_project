@@ -45,10 +45,58 @@ CHAPTER_WIKI_PROMPT = """你是一个网络小说分析专家。请分析以下�
 """
 
 def parse_chapter(chapter_title,chapter_text,max_retries=5):
-    """用LLM将单章编译为Wiki条目"""
+    """用LLM将单章编译为Wiki条目
+
+    长章节分块处理：超过 2800 字时自动滑窗分块，
+    逐块提取后用 LLM 合并，避免信息丢失。
+    """
+    # 短章节直接处理
+    if len(chapter_text) <= 2800:
+        return _parse_single_chunk(chapter_title, chapter_text, max_retries)
+
+    # 长章节：用 chunker 分块，每块单独提取再合并
+    from core.chunker import NovelChunker, safe_truncate
+
+    chunker = NovelChunker(chunk_size=400, overlap=80)  # 小块保证信息不丢
+    chunks = chunker.chunk_chapter(
+        text=chapter_text,
+        chapter_index=0,
+        chapter_title=chapter_title,
+    )
+
+    # 每块分别用 LLM 提取
+    chunk_results = []
+    for c in chunks:
+        result = _parse_single_chunk(
+            f"{chapter_title}[{c.position+1}/{len(chunks)}]",
+            c.text, max_retries,
+        )
+        if result and result.get("characters"):
+            chunk_results.append(result)
+
+    # 合并结果
+    if not chunk_results:
+        return _parse_single_chunk(chapter_title, safe_truncate(chapter_text, 2800), max_retries)
+
+    merged = {
+        "summary": "\n".join(r.get("summary", "") for r in chunk_results if r.get("summary")),
+        "characters": _merge_characters([r.get("characters", []) for r in chunk_results]),
+        "events": _merge_events([r.get("events", []) for r in chunk_results]),
+        "relationships": _merge_relationships([r.get("relationships", []) for r in chunk_results]),
+    }
+
+    # 如果合并后摘要太长，让 LLM 压缩
+    if len(merged["summary"]) > 500:
+        merged["summary"] = _summarize_merged(f"{chapter_title}\n{merged['summary']}")
+
+    return merged
+
+
+def _parse_single_chunk(chapter_title, chapter_text, max_retries=5):
+    """单段 LLM 提取（原有逻辑）"""
     prompt = CHAPTER_WIKI_PROMPT.format(
         chapter_title=chapter_title,
-        chapter_text=chapter_text[:3000], #每章只取前3000字，避免过长导致LLM处理失败
+        chapter_text=chapter_text,
     )
 
     for attempt in range(max_retries):
@@ -57,21 +105,19 @@ def parse_chapter(chapter_title,chapter_text,max_retries=5):
                 {"role":"user","content":prompt}
             ])
 
-            #尝试解析JSON
             import re
             json_match = re.search(r'\{.*\}', response, re.DOTALL)
             if json_match:
                 data = json.loads(json_match.group())
-                #验证必要字段
                 if "summary" in data and "characters" in data:
                     return data
-                
+
             raise ValueError("LLM返回的格式不正确，无法解析为JSON")
-        
+
         except Exception as e:
             if attempt < max_retries - 1:
                 print(f"  重试 {attempt + 1}/{max_retries}: {e}")
-                time.sleep(2) #稍等再试        
+                time.sleep(2)
             else:
                 print(f"  解析失败: {e}")
                 return {
@@ -80,6 +126,64 @@ def parse_chapter(chapter_title,chapter_text,max_retries=5):
                     "events": [],
                     "relationships": []
                 }
+
+
+def _merge_characters(char_lists):
+    """合并多块的 character 列表（去重）"""
+    seen = set()
+    merged = []
+    for chars in char_lists:
+        for c in chars:
+            name = c.get("name", "")
+            if name and name not in seen:
+                seen.add(name)
+                merged.append(c)
+    return merged
+
+
+def _merge_events(event_lists):
+    """合并多块的事件列表（去重）"""
+    seen = set()
+    merged = []
+    for events in event_lists:
+        for e in events:
+            if e and e not in seen:
+                seen.add(e)
+                merged.append(e)
+    return merged
+
+
+def _merge_relationships(rel_lists):
+    """合并多块的关系列表（去重）"""
+    seen = set()
+    merged = []
+    for rels in rel_lists:
+        for r in rels:
+            key = (r.get("source", ""), r.get("target", ""))
+            if key[0] and key not in seen:
+                seen.add(key)
+                merged.append(r)
+    return merged
+
+
+def _summarize_merged(text):
+    """用 LLM 压缩合并后的长摘要"""
+    prompt = f"""请将以下章节分析摘要压缩为 200 字以内的简洁版本，保留核心情节和关键事件：
+
+{text}
+
+以 JSON 格式返回：
+{{"summary": "压缩后的摘要"}}"""
+    response = call_llm([{"role": "user", "content": prompt}])
+    import re
+    json_match = re.search(r'\{.*\}', response, re.DOTALL)
+    if json_match:
+        try:
+            data = json.loads(json_match.group())
+            return data.get("summary", text[:500])
+        except:
+            pass
+    return text[:500]
 
 def build_wiki(novel_data, batch_size=5, delay=1, checkpoint_path=None):
     """将整本小说逐章编译为 Wiki

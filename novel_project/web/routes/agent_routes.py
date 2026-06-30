@@ -52,6 +52,29 @@ async def search(body: QueryRequest):
     return {"wiki_results": wiki_results, "graph_results": graph_results}
 
 
+@router.post("/search/vector")
+async def vector_search(body: QueryRequest):
+    """语义向量搜索（Level 3 检索）"""
+    from core.retriever import NovelRetriever
+    if not os.path.exists(WIKI_PATH):
+        return {"vector_results": []}
+    _ensure_graph()
+    retriever = NovelRetriever(WIKI_PATH, GRAPH_PATH, NOVEL_PATH)
+    results = retriever.search_by_vector(body.query, top_k=body.top_k)
+    return {"vector_results": results}
+
+
+@router.post("/search/all")
+async def search_all(body: QueryRequest):
+    """三级统一检索"""
+    from core.retriever import NovelRetriever
+    if not os.path.exists(WIKI_PATH):
+        return {"wiki_results": [], "graph_results": {}, "vector_results": []}
+    _ensure_graph()
+    retriever = NovelRetriever(WIKI_PATH, GRAPH_PATH, NOVEL_PATH)
+    return retriever.search(body.query, top_k=body.top_k)
+
+
 @router.post("/ask")
 async def ask_agent(body: AgentQueryRequest):
     from core.retriever import NovelRetriever
@@ -155,29 +178,115 @@ async def get_graph(novel: str = ""):
         return json.load(f)
 
 
+@router.post("/index")
+async def index_novel(data: dict):
+    """
+    将已编译的 novels 索引到向量库。
+    {"novel": "shaosong"}
+    """
+    novel = data.get("novel", "shaosong")
+    import glob
+
+    cn_map = {"shaosong": "《绍宋》作者：榴弹怕水"}
+    name = cn_map.get(novel, novel)
+    filepath = f"data/processed/{name}.json"
+
+    if not os.path.exists(filepath):
+        return {"status": "error", "message": f"文件不存在: {filepath}"}
+
+    with open(filepath, "r", encoding="utf-8") as f:
+        novel_data = json.load(f)
+
+    from core.chunker import NovelChunker, VectorStoreIndexer
+    chunker = NovelChunker(chunk_size=512, overlap=128)
+    chunks = chunker.chunk_novel(novel_data, novel_key=novel)
+
+    indexer = VectorStoreIndexer()
+    result = indexer.index_novel(novel, chunks)
+
+    return {
+        "status": "ok" if result.get("status") == "ok" else "partial",
+        "novel": novel,
+        "total_chunks": len(chunks),
+        "indexed": result.get("indexed", 0),
+    }
+
+
 # ---- 上传与编译 ----
 
 @router.post("/upload")
 async def upload_novel(file: UploadFile = File(...)):
-    """上传 TXT，返回章节数供用户选择"""
-    if not file.filename.endswith(".txt"):
-        raise HTTPException(status_code=400, detail="仅支持 .txt 文件")
+    """
+    上传文档，返回章节数供用户选择。
 
-    from scripts.clean_novel import process_file
-    raw_path = f"data/raw/{file.filename}"
-    os.makedirs("data/raw", exist_ok=True)
+    支持格式: .txt (逐步扩展 .docx .pdf .md)
+    """
+    from core.document_parser import get_router
+    from core.security import FileValidator
+
+    filename = file.filename or ""
+    ext = os.path.splitext(filename)[1].lower()
+
+    # 格式校验
+    router = get_router()
+    if ext not in router.supported_extensions():
+        supported = router.supported_formats_display()
+        raise HTTPException(
+            status_code=400,
+            detail=f"不支持的文件格式: {ext}。当前支持: {supported}",
+        )
+
+    # 文件内容安全校验
     content = await file.read()
+    validation = FileValidator.validate(filename, content)
+    if not validation["valid"]:
+        raise HTTPException(status_code=400, detail=validation["error"])
+
+    # 保存到 raw 目录
+    raw_path = f"data/raw/{filename}"
+    os.makedirs("data/raw", exist_ok=True)
     with open(raw_path, "wb") as f:
         f.write(content)
 
-    # 清洗
-    result = process_file(file.filename)
-    total_chapters = len(result.get("chapters", []))
+    # 用 DocumentRouter 解析
+    try:
+        result = router.parse(raw_path)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"文件解析失败: {e}")
+
+    # 同步保存为 processed JSON（兼容现有编译管道）
+    import json
+    from core.chunker import NovelChunker
+
+    title = result.get("title", "").replace("《", "").replace("》", "").strip()
+    processed_dir = "data/processed"
+    os.makedirs(processed_dir, exist_ok=True)
+    processed_path = f"{processed_dir}/{filename.replace(ext, '.json')}"
+
+    chapters = result["chapters"]
+    novel_data = {
+        "title": title or filename.replace(ext, ""),
+        "chapters": chapters,
+    }
+    with open(processed_path, "w", encoding="utf-8") as f:
+        json.dump(novel_data, f, ensure_ascii=False, indent=2)
+
+    # 可选：用分块引擎预分块并保存
+    chunker = NovelChunker(chunk_size=512, overlap=128)
+    chunks = chunker.chunk_novel(novel_data, novel_key=title or filename)
+    chunk_path = f"data/processed/{filename.replace(ext, '_chunks.json')}"
+    with open(chunk_path, "w", encoding="utf-8") as f:
+        json.dump([c.to_dict() for c in chunks], f, ensure_ascii=False, indent=2)
 
     return {
-        "filename": file.filename,
-        "total_chapters": total_chapters,
-        "message": f"清洗完成，共 {total_chapters} 章",
+        "filename": filename,
+        "format": result.get("metadata", {}).get("format", "txt"),
+        "total_chapters": len(chapters),
+        "total_chunks": len(chunks),
+        "chars_total": result.get("metadata", {}).get("chars_total", 0),
+        "chars_cleaned": result.get("metadata", {}).get("chars_cleaned", 0),
+        "message": f"解析完成，共 {len(chapters)} 章，{len(chunks)} 个语义块",
+        "file_info": result.get("metadata", {}),
     }
 
 
@@ -193,8 +302,9 @@ async def build_wiki_api(data: dict):
     from core.chapter_parser import build_wiki, build_volume_summaries, build_book_summary, save_hierarchical_wiki
     import json
 
-    novel_name = filename.replace(".txt", "").replace("《", "").replace("》", "")
-    processed_path = f"data/processed/{filename.replace('.txt', '.json')}"
+    ext = os.path.splitext(filename)[1]
+    novel_name = filename.replace(ext, "").replace("《", "").replace("》", "")
+    processed_path = f"data/processed/{filename.replace(ext, '.json')}"
 
     with open(processed_path, "r", encoding="utf-8") as f:
         novel = json.load(f)

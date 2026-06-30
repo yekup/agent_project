@@ -12,7 +12,6 @@ sys.path.insert(0,BASE_DIR)
 sys.path.insert(0,os.path.dirname(BASE_DIR))
 
 from core.knowledge_graph import load_graph
-from rag_project.core.retriever import Retriever
 
 class NovelRetriever:
     """网文三级检索器"""
@@ -43,8 +42,13 @@ class NovelRetriever:
         # 第二级：知识图谱
         self.graph = load_graph(graph_path)
 
-        # 第三级：原文向量检索
-        self.vector_retriever = Retriever()
+        # 第三级：向量检索（初始化 ChromaDB 索引器）
+        self._vector_indexer = None
+        try:
+            from core.chunker import VectorStoreIndexer
+            self._vector_indexer = VectorStoreIndexer()
+        except Exception:
+            pass
 
         # 原文索引(用于根据章节取原文)
         with open(novel_path,"r",encoding="utf-8") as f:
@@ -229,14 +233,17 @@ class NovelRetriever:
     
     def search_by_vector(self, query, top_k=3):
         """
-        第 3 级：向量检索原文（复用项目二的 ChromaDB 检索器）
-        需要先把网文原文存入向量库才能使用
+        第 3 级：向量检索原文。
+        通过 ChromaDB 对分块后的原文进行语义搜索。
         """
+        if self._vector_indexer is None:
+            return [{"text": "向量库未就绪", "metadata": {}, "score": 0}]
+
         try:
-            results = self.vector_retriever.retrieve(query, top_k=top_k)
-            return results
+            results = self._vector_indexer.search(query, top_k=top_k)
+            return results if results else [{"text": "无匹配结果", "metadata": {}, "score": 0}]
         except Exception as e:
-            return [{"text": f"向量库未就绪: {e}", "metadata": {"title": ""}}]
+            return [{"text": f"向量检索异常: {e}", "metadata": {}, "score": 0}]
 
     def search(self, query, top_k=3):
         """
@@ -259,9 +266,9 @@ class NovelRetriever:
         graph_results = self.search_by_graph(query)
         result["graph_results"] = graph_results
 
-        # 第 3 级：向量检索（如果有向量库）
-        # 向量检索需要先建库，暂时跳过
-        # result["vector_results"] = self.search_by_vector(query, top_k=top_k)
+        # 第 3 级：向量检索
+        vector_results = self.search_by_vector(query, top_k=top_k)
+        result["vector_results"] = vector_results
 
         # 组装摘要
         summary_parts = []
@@ -271,6 +278,8 @@ class NovelRetriever:
         if graph_results["matched_nodes"]:
             nodes = graph_results["matched_nodes"]
             summary_parts.append(f"相关人物：{'、'.join(nodes)}")
+        if vector_results and vector_results[0].get("text") and "未就绪" not in vector_results[0]["text"]:
+            summary_parts.append(f"向量匹配段落：{len(vector_results)} 条")
         result["summary"] = "；".join(summary_parts)
 
         return result

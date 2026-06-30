@@ -13,25 +13,99 @@ import re
 
 import networkx as nx
 
-def merge_characters(wiki_entries):
+def _build_alias_map(wiki_entries):
+    """
+    基于共现关系和角色描述构建别名映射。
+
+    规则:
+        1. 如果两个人物名在同一章节出现且 role 相同，可能是同一人
+        2. 如果人物名 A 包含在人物名 B 中（如"萧炎"和"萧炎小子"），自动合并
+        3. 对高频人名做简单模糊匹配（去掉括号/备注后匹配）
+
+    返回:
+        dict: {规范名: [别名列表]}
+    """
+    # 先收集所有人名
+    all_names = set()
+    name_info = {}  # name -> [(chapters, roles)]
+
+    for entry in wiki_entries:
+        ch_title = entry.get("chapter_title", "")
+        for c in entry.get("characters", []):
+            name = c["name"]
+            all_names.add(name)
+            if name not in name_info:
+                name_info[name] = {"chapters": set(), "roles": set()}
+            name_info[name]["chapters"].add(ch_title)
+            name_info[name]["roles"].add(c.get("role", ""))
+
+    # 构建别名映射
+    alias_map = {}
+    names_list = sorted(all_names, key=lambda n: -len(name_info[n]["chapters"]))
+
+    for i, name in enumerate(names_list):
+        if name in alias_map:
+            continue
+        canonical = name  # 规范名：出场最多的那个
+        alias_map[canonical] = []
+        clean_canonical = name.split("（")[0].split("(")[0]
+
+        for other in names_list[i + 1:]:
+            if other in alias_map:
+                continue
+            clean_other = other.split("（")[0].split("(")[0]
+
+            # 规则1: 包含关系
+            if clean_canonical and clean_other and (
+                clean_canonical in clean_other or clean_other in clean_canonical
+            ):
+                alias_map[canonical].append(other)
+                alias_map[other] = canonical if isinstance(alias_map.get(other), list) else []
+                continue
+
+            # 规则2: 角色相同且共现章节 > 50%
+            common = name_info[name]["chapters"] & name_info[other]["chapters"]
+            if (name_info[name]["roles"] == name_info[other]["roles"]
+                    and len(common) > 0
+                    and name_info[name]["roles"] != {"提及人物"}):
+                alias_map[canonical].append(other)
+                alias_map[other] = canonical
+
+    return alias_map
+
+
+def resolve_aliases(name: str, alias_map: dict) -> str:
+    """将别名解析为规范名"""
+    if name in alias_map:
+        if isinstance(alias_map[name], list):
+            return name
+        else:
+            return alias_map[name]
+    return name
+
+
+def merge_characters(wiki_entries, alias_map=None):
     """
     跨章合并人物实体
-    
+
     同一人物在不同章节可能有不同称呼（萧炎、炎帝、萧炎小子）
-    这里通过核心名称做简单合并
-    
+
     参数:
         wiki_entries: build_wiki 的输出，每章一条 Wiki 条目
-    
+        alias_map: _build_alias_map 的输出，None 则自动构建
+
     返回:
         dict: {人物名: {出场章节列表、角色描述、总提及次数}}
     """
-    char_map = {}  # 人物名 -> 信息聚合
+    if alias_map is None:
+        alias_map = _build_alias_map(wiki_entries)
+
+    char_map = {}  # 规范名 -> 信息聚合
 
     for entry in wiki_entries:
         chapter_title = entry.get("chapter_title", "")
         for c in entry.get("characters", []):
-            name = c["name"]
+            name = resolve_aliases(c["name"], alias_map)
             if name not in char_map:
                 char_map[name] = {
                     "name": name,
@@ -46,23 +120,27 @@ def merge_characters(wiki_entries):
 
     return char_map
 
-def merge_relationships(wiki_entries):
+def merge_relationships(wiki_entries, alias_map=None):
     """
     跨章合并人物关系
-    
+
     参数:
         wiki_entries: build_wiki 的输出
-    
+        alias_map: _build_alias_map 的输出
+
     返回:
         list of dict: [{source, target, relation, chapters, weight}]
     """
+    if alias_map is None:
+        alias_map = _build_alias_map(wiki_entries)
+
     rel_map = {}  # (source, target) -> 信息聚合
 
     for entry in wiki_entries:
         chapter_title = entry.get("chapter_title", "")
         for r in entry.get("relationships", []):
-            source = r["source"]
-            target = r["target"]
+            source = resolve_aliases(r["source"], alias_map)
+            target = resolve_aliases(r["target"], alias_map)
             key = (source, target)
 
             if key not in rel_map:

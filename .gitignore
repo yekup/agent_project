@@ -28,3 +28,16 @@ data/logs/
 
 # Neo4j import cypher scripts (regeneratable)
 *.cypher
+
+# ChromaDB vector store (regeneratable)
+novel_project/data/chroma/
+
+# User data (auto-created)
+novel_project/data/users.json
+
+# Test files
+novel_project/data/raw/test_upload*
+novel_project/data/processed/test_upload*
+
+# Virtual environment
+.venv/
