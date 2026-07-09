@@ -17,10 +17,14 @@ dist/
 .DS_Store
 Thumbs.db
 
-# Data artifacts (large generated files)
+# Data artifacts (large generated / regeneratable files)
 novel_project/data/raw/*.txt
 novel_project/data/processed/*.txt
 novel_project/data/processed/*_clean.txt
+novel_project/data/processed/*.json
+novel_project/data/wiki/*.json
+novel_project/data/memory/*.json
+novel_project/data/checkpoints/
 
 # Logs
 *.log
