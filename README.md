@@ -34,7 +34,7 @@
 | Frontend | Jinja2, **Tailwind CSS**, **Cytoscape.js**, Font Awesome |
 | LLM | **DeepSeek V4 Pro** (多模型路由 + 降级开关) |
 | Vector DB | **ChromaDB** (内置 ONNX embedding) |
-| Graph | **NetworkX** (图谱) / **Neo4j** (时序, 预留) |
+| Graph | **NetworkX** (图谱构建) → **Cytoscape.js** (前端渲染) / **Neo4j** (时序, 预留) |
 | Auth | JWT, 4-role permission, BaseHTTPMiddleware |
 | DB | 抽象层: JSON (当前) / MySQL (预留) |
 | Deploy | Docker Compose (6 services), Nginx |
