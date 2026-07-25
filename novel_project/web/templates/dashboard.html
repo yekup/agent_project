@@ -1,68 +1,95 @@
 <!DOCTYPE html>
 <html lang="zh-CN">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>网文图谱分析系统</title>
-    <script src="https://cdn.tailwindcss.com"></script>
-    <script src="/static/js/auth.js"></script>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>NovelGraph · 首页</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/font-awesome@4.7.0/css/font-awesome.min.css">
+  <script src="/static/js/auth.js"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          colors: {
+            tech: { main: '#22d3ee', dark: '#0891b2', bg: '#0c1222', card: 'rgba(255,255,255,0.05)', border: 'rgba(34,211,238,0.2)', text: '#e2e8f0' }
+          },
+          boxShadow: { glow: '0 0 18px rgba(34,211,238,0.15)' }
+        }
+      }
+    }
+  </script>
+  <style>
+    @layer utilities {
+      .glass { backdrop-filter: blur(12px); background: rgba(255,255,255,0.05); border: 1px solid rgba(34,211,238,0.2); border-radius: 12px; }
+      .btn-tech { background: rgba(34,211,238,0.1); border: 1px solid rgba(34,211,238,0.4); color: #22d3ee; padding: 4px 16px; border-radius: 8px; transition: all 0.3s; }
+      .btn-tech:hover { background: rgba(34,211,238,0.2); box-shadow: 0 0 18px rgba(34,211,238,0.15); }
+      .btn-solid { background: #22d3ee; color: #0c1222; padding: 4px 16px; border-radius: 8px; transition: all 0.3s; }
+      .btn-solid:hover { background: #0891b2; box-shadow: 0 0 18px rgba(34,211,238,0.15); }
+      .nav-link { padding: 8px 16px; border-radius: 8px; color: rgba(226,232,240,0.7); transition: all 0.3s; }
+      .nav-link:hover { color: #22d3ee; background: rgba(34,211,238,0.05); }
+      .nav-active { color: #22d3ee; background: rgba(34,211,238,0.1); }
+    }
+    body { background: #0c1222; color: #e2e8f0; min-height: 100vh; display: flex; flex-direction: column; }
+  </style>
 </head>
-<body class="bg-gray-900 text-white min-h-screen">
-    <nav class="bg-gray-800 border-b border-gray-700 px-6 py-3 flex items-center justify-between">
-        <div class="flex items-center space-x-6">
-            <h1 class="text-xl font-bold">📖 网文图谱</h1>
-            <a href="/" class="text-blue-400" data-perm="page:dashboard">首页</a>
-            <a href="/upload" class="text-gray-400 hover:text-white" data-perm="page:upload">上传</a>
-            <a href="/graph" class="text-gray-400 hover:text-white" data-perm="page:graph">图谱</a>
-            <a href="/chat" class="text-gray-400 hover:text-white" data-perm="page:chat">问答</a>
-        </div>
-        <div class="flex items-center space-x-3">
-            <span id="userInfo" class="text-sm text-gray-400"></span>
-            <a href="/login" id="loginBtn" class="text-sm text-blue-400 hover:text-blue-300">登录</a>
-            <button id="logoutBtn" onclick="AUTH.logout()" class="text-sm text-red-400 hover:text-red-300 hidden">登出</button>
-        </div>
-    </nav>
-    <main class="p-6 max-w-6xl mx-auto">
-        <h2 class="text-2xl font-bold mb-2">网文 GraphRAG 分析系统</h2>
-        <p class="text-gray-400 mb-6">多 Agent 协作 + 知识图谱 + RAG 检索</p>
+<body>
+  <nav class="glass mx-6 mt-6 px-6 py-3 sticky top-0 z-50">
+    <div class="flex items-center justify-between">
+      <a href="/" class="flex items-center gap-3">
+        <i class="fa fa-sitemap text-[#22d3ee] text-2xl"></i>
+        <span class="text-xl font-bold tracking-wide">NovelGraph</span>
+      </a>
+      <div class="flex gap-2">
+        <a href="/" class="nav-link nav-active" data-perm="page:dashboard"><i class="fa fa-home mr-1.5"></i>首页</a>
+        <a href="/upload" class="nav-link" data-perm="page:upload"><i class="fa fa-upload mr-1.5"></i>上传解析</a>
+        <a href="/graph" class="nav-link" data-perm="page:graph"><i class="fa fa-share-alt mr-1.5"></i>关系图谱</a>
+        <a href="/chat" class="nav-link" data-perm="page:chat"><i class="fa fa-commenting mr-1.5"></i>AI问答</a>
+      </div>
+      <div class="flex items-center gap-3">
+        <span id="userInfo" class="text-sm text-tech-text/60"></span>
+        <a href="/login" id="loginBtn" class="btn-tech text-sm">登录</a>
+        <button id="logoutBtn" onclick="AUTH.logout()" class="btn-tech text-sm hidden">登出</button>
+      </div>
+    </div>
+  </nav>
 
-        <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-8" data-perm="page:dashboard">
-            <a href="/upload" data-perm="page:upload" class="bg-gray-800 p-6 rounded-lg hover:bg-gray-750 transition border border-gray-700">
-                <div class="text-3xl mb-2">📤</div>
-                <h3 class="font-bold">上传文档</h3>
-                <p class="text-sm text-gray-400">TXT/Word/PDF → 解析 → 分块 → 编译</p>
-            </a>
-            <a href="/graph" class="bg-gray-800 p-6 rounded-lg hover:bg-gray-750 transition border border-gray-700">
-                <div class="text-3xl mb-2">🕸️</div>
-                <h3 class="font-bold">知识图谱</h3>
-                <p class="text-sm text-gray-400">人物关系可视化浏览</p>
-            </a>
-            <a href="/chat" class="bg-gray-800 p-6 rounded-lg hover:bg-gray-750 transition border border-gray-700">
-                <div class="text-3xl mb-2">💬</div>
-                <h3 class="font-bold">智能问答</h3>
-                <p class="text-sm text-gray-400">多 Agent 分析人物关系</p>
-            </a>
-            <div class="bg-gray-800 p-6 rounded-lg border border-gray-700">
-                <div class="text-3xl mb-2">📊</div>
-                <h3 class="font-bold">已入库</h3>
-                <p class="text-sm text-gray-400" id="statusInfo">加载中...</p>
-            </div>
-        </div>
+  <main class="flex-1 flex flex-col items-center justify-center px-8 py-20">
+    <div class="text-center max-w-3xl">
+      <h1 class="text-5xl font-bold mb-6 bg-gradient-to-r from-[#22d3ee] to-white bg-clip-text text-transparent">
+        小说智能图谱解析系统
+      </h1>
+      <p class="text-tech-text/60 text-lg mb-10 leading-relaxed">
+        基于 GraphRAG + DeepSeek AI，自动解析 TXT 文档，生成可视化人物关系图谱，助力考据、创作、剧情梳理
+      </p>
+      <div class="flex justify-center gap-4 mb-16" data-perm="page:dashboard">
+        <a href="/upload" data-perm="page:upload" class="btn-solid px-6 py-3 text-base font-bold"><i class="fa fa-upload mr-2"></i>开始上传</a>
+        <a href="/graph" class="btn-tech px-6 py-3 text-base"><i class="fa fa-share-alt mr-2"></i>浏览图谱</a>
+      </div>
 
-        <div class="bg-gray-800 p-6 rounded-lg">
-            <h3 class="text-lg font-bold mb-4">使用流程</h3>
-            <div class="space-y-2 text-gray-300">
-                <p>1️⃣ <b>上传</b> 文档 → 自动清洗去杂质</p>
-                <p>2️⃣ <b>选择</b> 编译前 N 章或全量 → LLM 逐章提取人物/事件/关系</p>
-                <p>3️⃣ <b>浏览</b> 人物关系图谱</p>
-                <p>4️⃣ <b>提问</b> 多 Agent 协作分析</p>
-            </div>
+      <div class="grid grid-cols-1 md:grid-cols-3 gap-6 text-left">
+        <div class="glass p-6">
+          <i class="fa fa-file-text-o text-[#22d3ee] text-3xl mb-4"></i>
+          <h3 class="text-lg font-bold mb-2">上传解析</h3>
+          <p class="text-tech-text/60 text-sm leading-relaxed">支持 TXT / PDF / 扫描件，自动分块、去杂质，LLM 逐章提取结构化信息</p>
         </div>
-    </main>
-    <script>
-        fetch('/api/novels').then(r => r.json())
-            .then(data => document.getElementById('statusInfo').textContent = data.length + ' 本书已入库')
-            .catch(() => document.getElementById('statusInfo').textContent = '加载失败');
-    </script>
+        <div class="glass p-6">
+          <i class="fa fa-sitemap text-[#22d3ee] text-3xl mb-4"></i>
+          <h3 class="text-lg font-bold mb-2">知识图谱</h3>
+          <p class="text-tech-text/60 text-sm leading-relaxed">Cytoscape.js 引擎生成人物关系图谱，自适应布局，缩放标签联动，一键导出 PNG/SVG</p>
+        </div>
+        <div class="glass p-6">
+          <i class="fa fa-commenting text-[#22d3ee] text-3xl mb-4"></i>
+          <h3 class="text-lg font-bold mb-2">AI 智能问答</h3>
+          <p class="text-tech-text/60 text-sm leading-relaxed">多 Agent 协作分析人物关系、情节脉络、全书总结，SSE 流式输出</p>
+        </div>
+      </div>
+    </div>
+  </main>
+  <script>
+    AUTH.apiFetch('/api/novels').then(r => r.json())
+      .then(data => { if(document.getElementById('statusInfo')) document.getElementById('statusInfo').textContent = data.length + ' 本书已入库'; })
+      .catch(() => {});
+  </script>
 </body>
 </html>

@@ -1,0 +1,173 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>关系图谱 - NovelGraph</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/font-awesome@4.7.0/css/font-awesome.min.css">
+  <script src="https://cdn.jsdelivr.net/npm/cytoscape@3.30.2/dist/cytoscape.min.js"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          colors: {
+            tech: {
+              main: '#22d3ee',
+              dark: '#0891b2',
+              bg: '#0c1222',
+              card: 'rgba(255,255,255,0.05)',
+              border: 'rgba(34,211,238,0.2)',
+              text: '#e2e8f0'
+            }
+          },
+          boxShadow: {
+            'glow': '0 0 18px rgba(34,211,238,0.15)'
+          }
+        }
+      }
+    }
+  </script>
+  <style type="text/tailwindcss">
+    @layer utilities {
+      .glass { @apply backdrop-blur-md bg-tech-card border border-tech-border rounded-xl; }
+      .btn-tech { @apply bg-tech-main/10 border border-tech-main/40 text-tech-main px-4 py-1.5 rounded-lg hover:bg-tech-main/20 hover:shadow-glow transition-all duration-300; }
+      .btn-solid { @apply bg-tech-main text-tech-bg px-4 py-1.5 rounded-lg hover:bg-tech-dark hover:shadow-glow transition-all duration-300; }
+      .nav-link { @apply px-4 py-2 rounded-lg text-tech-text/70 hover:text-tech-main hover:bg-tech-main/5 transition-all; }
+      .nav-active { @apply text-tech-main bg-tech-main/10; }
+      .scroll-hide::-webkit-scrollbar { display: none; }
+      .scroll-hide { -ms-overflow-style: none; scrollbar-width: none; }
+    }
+    body { @apply bg-tech-bg text-tech-text h-screen flex flex-col overflow-hidden; }
+  </style>
+</head>
+<body class="flex flex-col h-screen">
+  <nav class="glass mx-6 mt-6 px-6 py-3 z-50">
+    <div class="flex items-center justify-between">
+      <a href="index.html" class="flex items-center gap-3">
+        <i class="fa fa-sitemap text-tech-main text-2xl"></i>
+        <span class="text-xl font-bold tracking-wide">NovelGraph</span>
+      </a>
+      <div class="flex gap-2">
+        <a href="index.html" class="nav-link">首页</a>
+        <a href="upload.html" class="nav-link">上传解析</a>
+        <a href="graph.html" class="nav-link nav-active">关系图谱</a>
+        <a href="chat.html" class="nav-link">AI问答</a>
+      </div>
+      <div class="text-tech-text/60 text-sm">Admin</div>
+    </div>
+  </nav>
+
+  <!-- 工具栏 -->
+  <div class="mx-6 mt-4 glass px-4 py-3 flex items-center gap-4">
+    <span class="font-medium">《绍宋》人物图谱</span>
+    <select class="bg-transparent border border-tech-border rounded px-2 py-1 text-sm outline-none">
+      <option>绍宋</option>
+    </select>
+    <div class="relative">
+      <input placeholder="搜索人物..." class="bg-transparent border border-tech-border rounded pl-8 pr-3 py-1 text-sm w-48 outline-none focus:border-tech-main/60">
+      <i class="fa fa-search absolute left-3 top-1/2 -translate-y-1/2 text-tech-text/50"></i>
+    </div>
+    <button class="btn-tech text-sm"><i class="fa fa-search-plus mr-1"></i>聚焦</button>
+    <button class="btn-tech text-sm"><i class="fa fa-expand mr-1"></i>全图</button>
+    <button class="btn-solid text-sm ml-2"><i class="fa fa-download mr-1"></i>导出SVG</button>
+    <div class="ml-auto flex gap-2">
+      <select class="bg-transparent border border-tech-border rounded px-2 py-1 text-sm outline-none">
+        <option>全部节点</option>
+        <option>仅关联实体</option>
+      </select>
+    </div>
+  </div>
+
+  <!-- 图谱主体 -->
+  <main class="flex-1 mx-6 my-4 rounded-xl overflow-hidden flex relative glass">
+    <div id="cyContainer" class="w-full h-full"></div>
+
+    <!-- 右侧抽屉 -->
+    <div id="drawer" class="absolute top-0 right-0 w-[320px] h-full glass translate-x-full transition-transform duration-300 flex flex-col">
+      <div class="flex items-center justify-between p-4 border-b border-tech-border">
+        <h3 class="text-xl font-bold text-tech-main">赵玖</h3>
+        <button id="closeDrawer" class="text-tech-text/60 hover:text-tech-main"><i class="fa fa-times"></i></button>
+      </div>
+      <div class="p-4 text-sm text-tech-text/70 space-y-2">
+        <p>角色身份：主角</p>
+        <p>关联人数：170</p>
+        <p>出场频次：258 次</p>
+      </div>
+      <div class="px-4 py-2 text-sm font-medium text-tech-main border-t border-tech-border">关联关系</div>
+      <div class="flex-1 overflow-y-auto scroll-hide px-4 pb-4 space-y-3 text-sm">
+        <div class="p-2 rounded-lg bg-tech-main/5 border border-tech-border">
+          <p class="text-white font-medium">李纲</p>
+          <p class="text-tech-text/60 text-xs mt-1">君臣核心辅政关系</p>
+        </div>
+        <div class="p-2 rounded-lg bg-tech-main/5 border border-tech-border">
+          <p class="text-white font-medium">张邦昌</p>
+          <p class="text-tech-text/60 text-xs mt-1">政治对立、赦免制衡</p>
+        </div>
+      </div>
+    </div>
+  </main>
+
+  <!-- 底部状态栏 -->
+  <div class="mx-6 mb-6 glass px-4 py-3 flex justify-between text-xs text-tech-text/60">
+    <span>节点：759 ｜ 关系：1017</span>
+    <div class="flex gap-4">
+      <span><i class="fa fa-circle text-red-400 mr-1"></i>对立</span>
+      <span><i class="fa fa-circle text-tech-main mr-1"></i>同盟</span>
+      <span><i class="fa fa-circle text-slate-400 mr-1"></i>从属</span>
+    </div>
+  </div>
+
+  <script>
+    const cy = cytoscape({
+      container: document.getElementById('cyContainer'),
+      style: [
+        {
+          selector: 'node',
+          css: {
+            width: d => 8 + d.degree() * 0.5,
+            height: d => 8 + d.degree() * 0.5,
+            backgroundColor: '#22d3ee',
+            borderWidth: 2,
+            borderColor: '#0891b2',
+            textValign: 'center',
+            textHalign: 'center',
+            fontSize: 11,
+            textOpacity: 0.9
+          }
+        },
+        {
+          selector: 'edge',
+          css: {
+            curveStyle: 'haystack',
+            opacity: 0.25,
+            width: 1,
+            lineColor: '#22d3ee'
+          }
+        }
+      ],
+      layout: {
+        name: 'cose-bilkent',
+        nodeRepulsion: 45000,
+        gravity: 0.2,
+        idealEdgeLength: 200,
+        numIter: 1200,
+        clusterSeparation: 120,
+        tiling: true,
+        clustering: true,
+        randomize: false
+      }
+    });
+
+    const drawer = document.getElementById('drawer');
+    document.getElementById('closeDrawer').onclick = () => drawer.classList.add('translate-x-full');
+    document.getElementById('cyContainer').onclick = (e) => {
+      if(e.target.id === 'cyContainer') drawer.classList.add('translate-x-full');
+      else drawer.classList.remove('translate-x-full');
+    }
+
+    window.onresize = () => cy.fit({padding:70});
+    cy.fit({padding:70});
+  </script>
+</body>
+</html>

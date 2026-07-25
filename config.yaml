@@ -9,16 +9,21 @@ app:
   port: 8000
 
 llm:
+  provider: deepseek                     # deepseek | alibaba | custom
   primary:
     provider: deepseek
-    model: ${LLM_MODEL:-deepseek-chat}
+    model: ${LLM_MODEL:-deepseek-v4-pro}
     api_key: ${DEEPSEEK_API_KEY:-}
     base_url: ${LLM_BASE_URL:-https://api.deepseek.com}
     timeout: 60
+  # 降级开关：primary 不可用时自动尝试 fallback provider
+  fallback_enabled: true
   fallback:
-    provider: deepseek
-    model: "deepseek-chat"
-  strategy: "fallback"  # raise | degrade | fallback
+    provider: alibaba
+    model: qwen-plus
+    api_key: ${DASHSCOPE_API_KEY:-}
+    base_url: https://dashscope.aliyuncs.com/compatible-mode/v1
+  strategy: "fallback"
   budget:
     max_tokens_per_book: 5000000
     max_cost_usd: 10.0
@@ -32,6 +37,17 @@ auth:
     - editor
     - viewer
     - api
+
+db:
+  backend: "sqlite"              # sqlite (默认) | json | mysql
+  sqlite:
+    path: ""                     # 空 = 自动 data/novel_graphrag.db
+  mysql:
+    host: ${DB_HOST:-127.0.0.1}
+    port: ${DB_PORT:-3306}
+    user: ${DB_USER:-root}
+    password: ${DB_PASSWORD:-}
+    database: ${DB_NAME:-novel_graphrag}
 
 storage:
   neo4j:
@@ -53,7 +69,10 @@ security:
     requests_per_minute: 60
     burst: 100
   cors_origins:
-    - "*"
+    # 显式列出允许的前端源；"*" 会自动禁用 credentials（allow_credentials=False）。
+    # 前后端同源部署时本配置实际不生效，供前后端分离部署使用。
+    - "http://localhost:8000"
+    - "http://127.0.0.1:8000"
 
 logs:
   level: INFO

@@ -4,14 +4,14 @@
 """
 
 import json
+import logging
 import os
 import sys
 
-BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0,BASE_DIR)
-sys.path.insert(0,os.path.dirname(BASE_DIR))
-
 from core.knowledge_graph import load_graph
+from core.text_match import chapter_title_core, ngram_hits
+
+logger = logging.getLogger(__name__)
 
 class NovelRetriever:
     """网文三级检索器"""
@@ -42,6 +42,10 @@ class NovelRetriever:
         # 第二级：知识图谱
         self.graph = load_graph(graph_path)
 
+        # 从 wiki_path 提取小说 key（用于对话 Wiki 文件定位）
+        wiki_basename = os.path.basename(wiki_path)
+        self._novel_key = wiki_basename.replace("_hierarchical.json", "").replace("_wiki.json", "")
+
         # 第三级：向量检索（初始化 ChromaDB 索引器）
         self._vector_indexer = None
         try:
@@ -55,10 +59,10 @@ class NovelRetriever:
             novel_data = json.load(f)
         self.chapters = novel_data["chapters"]
 
-        print(f"三级检索器初始化完成：")
-        print(f"  Wiki: {len(self.wiki)} 章" + (f" + {len(self.volumes)} 卷 + 全书摘要" if self._has_hierarchy else ""))
-        print(f"  图谱: {self.graph.number_of_nodes()} 人物, {self.graph.number_of_edges()} 关系")
-        print(f"  原文: {len(self.chapters)} 章")
+        logger.info(f"三级检索器初始化完成：")
+        logger.info(f"  Wiki: {len(self.wiki)} 章" + (f" + {len(self.volumes)} 卷 + 全书摘要" if self._has_hierarchy else ""))
+        logger.info(f"  图谱: {self.graph.number_of_nodes()} 人物, {self.graph.number_of_edges()} 关系")
+        logger.info(f"  原文: {len(self.chapters)} 章")
 
     def _dynamic_top_k(self, query, default=5):
         """
@@ -95,38 +99,35 @@ class NovelRetriever:
         return default
 
     def _match_entry(self, entry, query_lower):
-        """计算单条 Wiki 条目与查询的匹配分数"""
+        """计算单条 Wiki 条目与查询的匹配分数（中文 n-gram 匹配）"""
         score = 0
         title = entry.get("chapter_title") or entry.get("title", "")
         summary = entry.get("summary", "")
 
-        # 标题匹配
-        for word in title.lower().split():
-            if len(word) > 1 and word in query_lower:
+        # 标题匹配：完整标题或核心名（去掉"第X章"）出现在问题中
+        if title:
+            core = chapter_title_core(title)
+            if title.lower() in query_lower or (core and core.lower() in query_lower):
                 score += 10
-                break
 
-        # 摘要匹配
-        if summary:
-            for word in summary.lower().split()[:10]:
-                if len(word) > 1 and word in query_lower:
-                    score += 5
-                    break
+        # 摘要匹配：问题的 n-gram 命中摘要（≥2 防泛匹配）
+        if summary and ngram_hits(query_lower, summary.lower()) >= 2:
+            score += 5
 
-        # 人物匹配
+        # 人物匹配（子串包含即可）
         for c in entry.get("characters", []):
-            name = c["name"].split("（")[0].split("(")[0]
+            name = (c.get("name") or "").split("（")[0].split("(")[0]
             if name and name in query_lower:
                 score += 10
                 break
         for c in entry.get("main_characters", []):
-            if c in query_lower:
+            if c and c in query_lower:
                 score += 10
                 break
 
-        # 事件匹配
+        # 事件匹配：问题的 n-gram 命中事件描述
         for e in entry.get("events", []):
-            if any(word in query_lower for word in e.split()[:5]):
+            if e and ngram_hits(query_lower, e.lower()) >= 2:
                 score += 5
                 break
 
@@ -231,7 +232,7 @@ class NovelRetriever:
             "relations": relations,
         }
     
-    def search_by_vector(self, query, top_k=3):
+    def search_by_vector(self, query, top_k=20):
         """
         第 3 级：向量检索原文。
         通过 ChromaDB 对分块后的原文进行语义搜索。
@@ -245,9 +246,67 @@ class NovelRetriever:
         except Exception as e:
             return [{"text": f"向量检索异常: {e}", "metadata": {}, "score": 0}]
 
+    def search_dialogue_wiki(self, query, top_k=3):
+        """
+        检索对话 Wiki（独立于章节 Wiki 的讨论结论文档层）。
+
+        打分策略: 实体命中 ×5 + ngram_hits(query, topic + conclusion)
+
+        返回带 source_type: "dialogue" 标记的结果列表。
+        无匹配时返回空列表。
+        """
+        result = []
+        dialogue_path = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            "data", "wiki", f"{self._novel_key}_dialogue.json",
+        )
+        if not os.path.exists(dialogue_path):
+            return result
+
+        try:
+            with open(dialogue_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except Exception:
+            return result
+
+        entries = data.get("entries", [])
+        if not entries:
+            return result
+
+        scored = []
+        for entry in entries:
+            score = 0
+            # 实体命中 ×5
+            for entity in entry.get("entities", []):
+                if entity and entity in query:
+                    score += 5
+            # n-gram 命中 topic + conclusion
+            combined = (entry.get("topic", "") + " " + entry.get("conclusion", ""))
+            try:
+                score += ngram_hits(query, combined)
+            except Exception:
+                pass
+
+            if score > 0:
+                scored.append((score, entry))
+
+        scored.sort(key=lambda x: -x[0])
+        for _, entry in scored[:top_k]:
+            result.append({
+                "source_type": "dialogue",
+                "topic": entry.get("topic", ""),
+                "conclusion": entry.get("conclusion", ""),
+                "key_points": entry.get("key_points", []),
+                "entities": entry.get("entities", []),
+                "evidence_chapters": entry.get("evidence_chapters", []),
+                "text": f"【讨论结论】{entry.get('topic', '')}：{entry.get('conclusion', '')}",
+            })
+
+        return result
+
     def search(self, query, top_k=3):
         """
-        三级检索合一：先 Wiki → 再图谱 → 最后原文
+        检索：Wiki → 图谱 → 向量 → 对话 Wiki
         返回汇总结果
         """
         result = {
@@ -255,6 +314,7 @@ class NovelRetriever:
             "wiki_results": [],
             "graph_results": {"matched_nodes": [], "relations": []},
             "vector_results": [],
+            "dialogue_results": [],
             "summary": "",
         }
 
@@ -270,6 +330,10 @@ class NovelRetriever:
         vector_results = self.search_by_vector(query, top_k=top_k)
         result["vector_results"] = vector_results
 
+        # 第 4 级：对话 Wiki 检索
+        dialogue_results = self.search_dialogue_wiki(query, top_k=top_k)
+        result["dialogue_results"] = dialogue_results
+
         # 组装摘要
         summary_parts = []
         if wiki_results:
@@ -280,6 +344,8 @@ class NovelRetriever:
             summary_parts.append(f"相关人物：{'、'.join(nodes)}")
         if vector_results and vector_results[0].get("text") and "未就绪" not in vector_results[0]["text"]:
             summary_parts.append(f"向量匹配段落：{len(vector_results)} 条")
+        if dialogue_results:
+            summary_parts.append(f"已有讨论结论：{len(dialogue_results)} 条")
         result["summary"] = "；".join(summary_parts)
 
         return result

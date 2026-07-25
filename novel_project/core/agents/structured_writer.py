@@ -25,10 +25,6 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
-BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-sys.path.insert(0, BASE_DIR)
-sys.path.insert(0, os.path.dirname(BASE_DIR))
-
 logger = logging.getLogger(__name__)
 
 from core.llm import call_llm

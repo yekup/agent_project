@@ -102,6 +102,25 @@ const AUTH = {
   has(perm) {
     return !!this.permissions[perm]
   },
+
+  /**
+   * 带鉴权的 fetch 封装：
+   * - 自动附加 Authorization: Bearer <token>
+   * - 后端返回 401 时清除本地登录态并跳转登录页
+   * 所有 /api 请求都应走这个入口（FormData 上传同样适用，
+   * 不要手动设置 Content-Type，浏览器会自动带 boundary）。
+   */
+  async apiFetch(url, options = {}) {
+    const headers = { ...(options.headers || {}) }
+    if (this.token) headers['Authorization'] = 'Bearer ' + this.token
+    const resp = await fetch(url, { ...options, headers })
+    if (resp.status === 401) {
+      this.clear()
+      window.location.href = '/login'
+      throw new Error('未登录或登录已过期')
+    }
+    return resp
+  },
 }
 
 // 页面加载时自动初始化

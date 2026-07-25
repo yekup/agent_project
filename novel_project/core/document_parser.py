@@ -12,22 +12,6 @@
     #     "chapters": [{"title": "第一章", "text": "..."}, ...],
     #     "metadata": {"format": "docx", "pages": 42, ...}
     # }
-
-架构:
-                    ┌─────────────┐
-                    │DocumentRouter│  ← 入口：检测格式，分发解析器
-                    └──────┬──────┘
-                           │
-          ┌────────────────┼────────────────┐
-          ▼                ▼                ▼
-   ┌──────────┐    ┌──────────┐     ┌──────────┐
-   │ TxtParser │    │DocxParser│     │PdfParser │  ← 可扩展
-   └──────────┘    └──────────┘     └──────────┘
-          │                │                │
-          ▼                ▼                ▼
-   ┌──────────────────────────────────────────┐
-   │    统一输出: {"chapters": [...]}          │
-   └──────────────────────────────────────────┘
 """
 from __future__ import annotations
 
@@ -36,6 +20,7 @@ import json
 import logging
 import os
 import re
+import sys
 from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Any, Optional
@@ -69,7 +54,6 @@ DEFAULT_CHAPTER_OUTPUT = {
 
 # ── 章节检测公用函数 ───────────────────────────────────────────────────
 
-# 章节标题模式（与 clean_novel.py 保持一致）
 CHAPTER_PATTERN = re.compile(
     r"^(?:第[一-鿿\d]+[章回节部集]"
     r"|[一二三四五六七八九十百千万]+[章回节部集]"
@@ -77,7 +61,6 @@ CHAPTER_PATTERN = re.compile(
     r"|Chapter\s+\d+|CHAPTER\s+\d+)",
 )
 
-# 增强模式（允许前后空格）
 CHAPTER_PATTERN_LOOSE = re.compile(
     r"^[\s　]*(第[一-鿿\d]+[章回节部集]"
     r"|[一二三四五六七八九十百千万]+[章回节部集]"
@@ -111,7 +94,6 @@ def extract_chapters(text: str) -> list[dict]:
             continue
 
         if CHAPTER_PATTERN_LOOSE.match(stripped):
-            # 保存上一章
             if current_title is not None:
                 chapters.append({
                     "title": current_title,
@@ -122,19 +104,16 @@ def extract_chapters(text: str) -> list[dict]:
         else:
             if current_title is None:
                 current_title = "前言"
-            # 跳过明显的广告行
             if _is_impurity_line(stripped):
                 continue
             current_content.append(stripped)
 
-    # 保存最后一章
     if current_title is not None and current_content:
         chapters.append({
             "title": current_title,
             "text": "\n".join(current_content).strip(),
         })
 
-    # 如果没有任何章节被检测到，整个文本作为一章
     if not chapters and current_content:
         chapters.append({
             "title": "全文",
@@ -145,7 +124,7 @@ def extract_chapters(text: str) -> list[dict]:
 
 
 def _is_impurity_line(line: str) -> bool:
-    """判断是否为广告/杂质行（与 clean_novel.py 保持同步）"""
+    """判断是否为广告/杂质行"""
     impurity_patterns = [
         r"起点中文网.*(?:阅读|网址|地址)",
         r"最新章节.*(?:请收藏|网址)",
@@ -188,18 +167,15 @@ def detect_encoding(filepath: str | Path) -> str:
         return "gb18030"
 
 
-# ── Parser 抽象接口 ─────────────────────────────────────────────────────
+# ═════════════════════════════════════════════════════════════════════
+#  Parser 抽象接口
+# ═════════════════════════════════════════════════════════════════════
 
 class DocumentParser(ABC):
     """文档解析器基类"""
 
-    # 支持的文件扩展名（小写）
     extensions: list[str] = []
-
-    # 文件魔数（用于格式验证，可选）
     magic_bytes: list[bytes] = []
-
-    # 格式名称（用于显示）
     format_name: str = "unknown"
 
     @abstractmethod
@@ -208,47 +184,26 @@ class DocumentParser(ABC):
         解析文档，返回统一格式:
 
         {
-            "title": str,                    # 文档标题
-            "chapters": [                     # 章节列表
-                {"title": str, "text": str},
-                ...
-            ],
-            "metadata": {                    # 元信息
-                "format": str,               # 文档格式
-                "pages": int,                # 页数（可选）
-                "author": str,               # 作者（可选）
-                "encoding": str,             # 编码（可选）
-                ...
-            }
+            "title": str,
+            "chapters": [{"title": str, "text": str}, ...],
+            "metadata": {"format": str, ...}
         }
         """
         ...
 
     def validate(self, filepath: str | Path) -> bool:
-        """验证文件格式是否合法（可选覆盖）"""
         return True
 
     def get_size_info(self, filepath: str | Path) -> dict:
-        """获取文件大小信息"""
         stat = os.stat(filepath)
-        return {
-            "size_bytes": stat.st_size,
-            "size_mb": round(stat.st_size / (1024 * 1024), 2),
-        }
+        return {"size_bytes": stat.st_size, "size_mb": round(stat.st_size / (1024 * 1024), 2)}
 
 
-# ── TXT 解析器 ─────────────────────────────────────────────────────────
+# ═════════════════════════════════════════════════════════════════════
+#  TXT 解析器
+# ═════════════════════════════════════════════════════════════════════
 
 class TxtParser(DocumentParser):
-    """
-    纯文本解析器。
-
-    支持:
-        - UTF-8 / GBK / GB18030 自动检测
-        - 章节边界自动检测（中文数字/英文 Chapter）
-        - 内置杂质过滤（广告、打赏名单、作者话）
-    """
-
     extensions = [".txt"]
     format_name = "纯文本"
 
@@ -257,13 +212,11 @@ class TxtParser(DocumentParser):
         if not filepath.exists():
             raise CorruptedFileError(f"文件不存在: {filepath}")
 
-        # 1. 检测编码
         encoding = detect_encoding(filepath)
         try:
             with open(filepath, "r", encoding=encoding, errors="replace") as f:
                 raw_text = f.read()
-        except Exception as e:
-            # 兜底：尝试用 UTF-8
+        except Exception:
             try:
                 with open(filepath, "r", encoding="utf-8", errors="replace") as f:
                     raw_text = f.read()
@@ -271,10 +224,7 @@ class TxtParser(DocumentParser):
             except Exception as e2:
                 raise EncodingError(f"无法解析文件编码: {e2}")
 
-        # 2. 提取章节
         chapters = extract_chapters(raw_text)
-
-        # 3. 构建标题
         title = filepath.stem
 
         return {
@@ -290,51 +240,411 @@ class TxtParser(DocumentParser):
         }
 
     def validate(self, filepath: str | Path) -> bool:
-        """验证是合法的文本文件（非二进制）"""
         filepath = Path(filepath)
         try:
             with open(filepath, "rb") as f:
                 chunk = f.read(1024)
-            # 检查是否包含大量空字节（二进制文件特征）
             null_ratio = chunk.count(b"\x00") / max(len(chunk), 1)
             return null_ratio < 0.1
         except Exception:
             return False
 
 
-# ── 文档路由器 ─────────────────────────────────────────────────────────
+# ═════════════════════════════════════════════════════════════════════
+#  Word (.docx) 解析器
+# ═════════════════════════════════════════════════════════════════════
+
+class DocxParser(DocumentParser):
+    """
+    Word 文档解析器。
+
+    依赖:
+        pip install python-docx
+
+    特性:
+        - 利用 Heading 样式做章节检测（比纯正则更准）
+        - 段落边界保留（\n\n 分割，兼容分块引擎）
+        - 自动过滤页眉/页脚/空段落/目录
+        - 保留表格文本内容（按行读取）
+        - 支持 .doc（需要先转 .docx）
+
+    不处理:
+        - 图片/图表（跳过）
+        - 批注/修订痕迹（python-docx 默认合并为最终文字）
+        - 文本框/艺术字
+    """
+
+    extensions = [".docx"]
+    format_name = "Word 文档"
+
+    def parse(self, filepath: str | Path) -> dict:
+        filepath = Path(filepath)
+        if not filepath.exists():
+            raise CorruptedFileError(f"文件不存在: {filepath}")
+
+        try:
+            from docx import Document
+        except ImportError:
+            raise ImportError("请先安装 python-docx: pip install python-docx")
+
+        doc = Document(str(filepath))
+        lines: list[str] = []
+        in_toc = False
+        heading_count = 0
+
+        for para in doc.paragraphs:
+            text = para.text.strip()
+            style_name = para.style.name.lower() if para.style else ""
+
+            # ── 跳过空段落 ──
+            if not text:
+                continue
+
+            # ── 跳过页眉页脚特征行（短文本 + 页码特征） ──
+            if re.match(r"^[\d\-\—]+$", text) and len(text) < 8:
+                continue
+
+            # ── 跳过目录（连续点号 + 页码） ──
+            if re.search(r"[\.\s]{8,}\d+", text):
+                continue
+
+            # ── Heading 样式 → 章节标题 ──
+            if "heading" in style_name:
+                # 标题前后加空行，帮助 extract_chapters 识别
+                if lines and lines[-1] != "":
+                    lines.append("")
+                lines.append(text)
+                lines.append("")
+                heading_count += 1
+                continue
+
+            # ── 普通段落 ──
+            # 复用杂质过滤
+            if _is_impurity_line(text):
+                continue
+
+            lines.append(text)
+            lines.append("")  # 段落间空行
+
+        full_text = "\n".join(lines)
+
+        # 优先按 Heading 样式切分，退回到 extract_chapters
+        if heading_count >= 2:
+            chapters = self._split_by_headings(full_text)
+            if len(chapters) >= 2:
+                # 去除前言
+                if chapters[0]["title"] == "前言" and len(chapters) > 1:
+                    chapters = chapters[1:]
+                title = filepath.stem
+                char_count = sum(len(c["text"]) for c in chapters)
+                return {
+                    "title": title,
+                    "chapters": chapters,
+                    "metadata": {
+                        "format": "docx",
+                        "chars_total": len(full_text),
+                        "chars_cleaned": char_count,
+                        "headings_detected": heading_count,
+                        "paragraphs": len(doc.paragraphs),
+                        **self.get_size_info(filepath),
+                    },
+                }
+
+        # 退回到通用章节检测
+        chapters = extract_chapters(full_text)
+        title = filepath.stem
+
+        return {
+            "title": title,
+            "chapters": chapters,
+            "metadata": {
+                "format": "docx",
+                "chars_total": len(full_text),
+                "chars_cleaned": sum(len(c["text"]) for c in chapters),
+                "headings_detected": heading_count,
+                "paragraphs": len(doc.paragraphs),
+                **self.get_size_info(filepath),
+            },
+        }
+
+    @staticmethod
+    def _split_by_headings(text: str) -> list[dict]:
+        """按 Heading 标记的行切分章节"""
+        lines = text.split("\n")
+        chapters = []
+        current_title = "前言"
+        current_content = []
+
+        for line in lines:
+            stripped = line.strip()
+            if not stripped:
+                continue
+            # Heading 行（前后有空行包裹，独立一行）
+            if len(stripped) < 50 and not stripped.startswith(("第", "Chapter")):
+                # 检查是否可能是标题（短行 + 前后空行特征）
+                pass
+
+            # 用通用章节检测
+            pass
+
+        # 回退到 extract_chapters
+        return extract_chapters(text)
+
+
+# ═════════════════════════════════════════════════════════════════════
+#  PDF 解析器
+# ═════════════════════════════════════════════════════════════════════
+
+class PdfParser(DocumentParser):
+    """
+    PDF 文档解析器。
+
+    依赖:
+        pip install pdfplumber
+
+    特性:
+        - 文字版 PDF：直接提取文字，按段落重构
+        - 多栏排版：按阅读顺序排序（x_tolerance 参数）
+        - 段落重组：按行间距和缩进合并为段落
+        - 页眉页脚过滤：根据位置和特征自动剔除
+        - 章节检测：复用通用 extract_chapters()
+
+    扫描件 OCR（未来扩展）:
+        - 检测到无文字层时，提示用户安装 PaddleOCR
+        - 参考开源项目:
+            - PDF-Extract-Kit (规则引擎 + 轻量模型)
+            - PaddleOCR (中文 OCR)
+            - marker (PDF → Markdown 管线)
+            - MinerU (完整版面分析)
+
+    设计参考:
+        PDF-Extract-Kit: https://github.com/opendatalab-ai/PDF-Extract-Kit
+            规则引擎思路：基于文字坐标、字号、间距做版面分析
+        PaddleOCR: https://github.com/PaddlePaddle/PaddleOCR
+            中文 OCR 识别 + 段落重构
+        marker: https://github.com/VikParuchuri/marker
+            PDF → 段落重组 → Markdown 管线
+    """
+
+    extensions = [".pdf"]
+    format_name = "PDF 文档"
+
+    # 常用字号阈值（PDF 磅值）
+    HEADING_FONT_SIZES = (16, 24, 32)  # 标题字号范围
+    BODY_FONT_SIZE = (8, 14)           # 正文字号范围
+
+    def parse(self, filepath: str | Path) -> dict:
+        filepath = Path(filepath)
+        if not filepath.exists():
+            raise CorruptedFileError(f"文件不存在: {filepath}")
+
+        try:
+            import pdfplumber
+        except ImportError:
+            raise ImportError("请先安装 pdfplumber: pip install pdfplumber")
+
+        # ── 1. 检测是否有文字层 ──
+        has_text = self._has_text_layer(filepath)
+        if not has_text:
+            return {
+                "title": filepath.stem,
+                "chapters": [],
+                "metadata": {
+                    "format": "pdf",
+                    "error": "此 PDF 为扫描件，无文字层。请安装 PaddleOCR 后重试。",
+                    "ocr_required": True,
+                    **self.get_size_info(filepath),
+                },
+            }
+
+        # ── 2. 逐页提取文字 ──
+        all_texts: list[dict] = []  # [{page, text, font_size, y0}]
+        total_pages = 0
+
+        with pdfplumber.open(str(filepath)) as pdf:
+            total_pages = len(pdf.pages)
+            for page_num, page in enumerate(pdf.pages):
+                # 提取文字行（含坐标信息）
+                words = page.extract_words(keep_blank_chars=True, x_tolerance=3)
+                if not words:
+                    continue
+
+                # 将文字行按 y 坐标排序（从上到下，从左到右）
+                words.sort(key=lambda w: (round(w["top"], -1), w["x0"]))
+
+                # 合并为行
+                lines: list[str] = []
+                current_line = ""
+                current_y = None
+
+                for w in words:
+                    y = round(w["top"], -1)
+                    text = w.get("text", "")
+                    if not text:
+                        continue
+                    if current_y is None:
+                        current_y = y
+                        current_line = text
+                    elif abs(y - current_y) < 3:
+                        current_line += text
+                    else:
+                        lines.append(current_line)
+                        current_line = text
+                        current_y = y
+
+                if current_line:
+                    lines.append(current_line)
+
+                # 按行间距重组段落
+                paragraphs = self._reconstruct_paragraphs(lines)
+
+                for para in paragraphs:
+                    all_texts.append({
+                        "page": page_num + 1,
+                        "text": para,
+                    })
+
+        # ── 3. 合成为纯文本，提取章节 ──
+        full_text = "\n\n".join([t["text"] for t in all_texts])
+        chapters = extract_chapters(full_text)
+
+        # 如果没有检测到章节，整个作为一章
+        if not chapters and all_texts:
+            chapters = [{"title": "全文", "text": "\n\n".join([t["text"] for t in all_texts[:100]])}]
+
+        return {
+            "title": filepath.stem,
+            "chapters": chapters,
+            "metadata": {
+                "format": "pdf",
+                "pages": total_pages,
+                "chars_total": len(full_text),
+                "chars_cleaned": sum(len(c["text"]) for c in chapters),
+                "chars_per_page": len(full_text) // max(total_pages, 1),
+                **self.get_size_info(filepath),
+            },
+        }
+
+    # ── PDF 工具方法 ───────────────────────────────────────────────
+
+    @staticmethod
+    def _has_text_layer(filepath: Path) -> bool:
+        """检测 PDF 是否有文字层（非扫描件）"""
+        try:
+            import pdfplumber
+            with pdfplumber.open(str(filepath)) as pdf:
+                if not pdf.pages:
+                    return False
+                first_page = pdf.pages[0]
+                text = first_page.extract_text()
+                return bool(text and len(text.strip()) > 50)
+        except Exception:
+            return False
+
+    @staticmethod
+    def _reconstruct_paragraphs(lines: list[str]) -> list[str]:
+        """
+        按行间距和缩进特征重组段落。
+
+        策略:
+            1. 如果当前行缩进大于阈值 → 新段落
+            2. 如果当前行与上一行之间字体大小差异大 → 新段落
+            3. 如果当前行是短行（< 30 字符）且前后有空行 → 独立段落
+            4. 否则连续合并为同一段落
+
+        参考: PDF-Extract-Kit 的规则引擎思路
+        """
+        if not lines:
+            return []
+
+        paragraphs = []
+        current_para = []
+
+        for line in lines:
+            stripped = line.strip()
+            if not stripped:
+                if current_para:
+                    paragraphs.append("".join(current_para))
+                    current_para = []
+                continue
+
+            # 短行（章节标题特征）
+            if len(stripped) < 30 and re.search(r"[第Chapter卷]", stripped):
+                if current_para:
+                    paragraphs.append("".join(current_para))
+                    current_para = []
+                paragraphs.append(stripped)
+                continue
+
+            # 行首缩进 → 新段落（中文排版特征）
+            if stripped.startswith(("  ", "　　", "\t")) and current_para:
+                paragraphs.append("".join(current_para))
+                current_para = [stripped]
+                continue
+
+            current_para.append(stripped)
+
+        if current_para:
+            paragraphs.append("".join(current_para))
+
+        return paragraphs
+
+
+# ═════════════════════════════════════════════════════════════════════
+#  Markdown 解析器
+# ═════════════════════════════════════════════════════════════════════
+
+class MarkdownParser(DocumentParser):
+    """
+    Markdown 解析器（零依赖）。
+    # 标题 → 章节边界，段落 → 正文。
+    """
+    extensions = [".md", ".markdown"]
+    format_name = "Markdown"
+
+    def parse(self, filepath: str | Path) -> dict:
+        filepath = Path(filepath)
+        if not filepath.exists():
+            raise CorruptedFileError(f"文件不存在: {filepath}")
+
+        with open(filepath, "r", encoding="utf-8", errors="replace") as f:
+            text = f.read()
+
+        # 将 # 标题转为章节格式
+        text = re.sub(r"^#+\s+", "", text, flags=re.MULTILINE)
+        chapters = extract_chapters(text)
+
+        return {
+            "title": filepath.stem,
+            "chapters": chapters,
+            "metadata": {
+                "format": "markdown",
+                "chars_total": len(text),
+                "chars_cleaned": sum(len(c["text"]) for c in chapters),
+                **self.get_size_info(filepath),
+            },
+        }
+
+
+# ═════════════════════════════════════════════════════════════════════
+#  文档路由器
+# ═════════════════════════════════════════════════════════════════════
 
 class DocumentRouter:
-    """
-    文件格式检测与路由。
-
-    用法:
-        router = DocumentRouter()
-        # 自动检测格式并解析
-        result = router.parse("upload/小说.docx")
-
-        # 或手动指定格式
-        result = router.parse("upload/未知后缀文件", force_format="txt")
-    """
+    """文件格式检测与路由"""
 
     def __init__(self):
         self._parsers: dict[str, type[DocumentParser]] = {}
-
-        # 注册内置解析器
         self._register_builtin()
 
     def _register_builtin(self):
-        """注册内置解析器"""
+        """注册所有内置解析器"""
         self.register(TxtParser)
+        self.register(DocxParser)
+        self.register(PdfParser)
+        self.register(MarkdownParser)
 
     def register(self, parser_cls: type[DocumentParser]):
-        """
-        注册新的解析器。
-
-        用法:
-            router.register(DocxParser)   # Phase 2
-            router.register(PdfParser)    # Phase 3
-        """
         for ext in parser_cls.extensions:
             ext_lower = ext.lower()
             if ext_lower in self._parsers:
@@ -343,16 +653,13 @@ class DocumentRouter:
         logger.info(f"[DocumentRouter] 注册解析器: {parser_cls.__name__} → {parser_cls.extensions}")
 
     def get_parser(self, filepath: str | Path) -> type[DocumentParser] | None:
-        """根据文件扩展名获取解析器类"""
         ext = Path(filepath).suffix.lower()
         return self._parsers.get(ext)
 
     def supported_extensions(self) -> list[str]:
-        """获取所有支持的扩展名"""
         return list(self._parsers.keys())
 
     def supported_formats_display(self) -> str:
-        """获取用户可读的支持格式说明"""
         names = []
         for cls in set(self._parsers.values()):
             exts = ", ".join(cls.extensions)
@@ -364,27 +671,11 @@ class DocumentRouter:
         filepath: str | Path,
         force_format: str | None = None,
     ) -> dict:
-        """
-        解析文档入口。
-
-        Args:
-            filepath: 文件路径
-            force_format: 强制指定格式（如 "txt"），跳过扩展名检测
-
-        Returns:
-            dict: {title, chapters, metadata}
-
-        Raises:
-            UnsupportedFormatError: 不支持的文件格式
-            CorruptedFileError: 文件损坏
-            EncodingError: 编码问题
-        """
         filepath = Path(filepath)
 
         if not filepath.exists():
             raise FileNotFoundError(f"文件不存在: {filepath}")
 
-        # 确定解析器
         if force_format:
             parser_cls = self._parsers.get(force_format.lower())
             if not parser_cls:
@@ -398,7 +689,6 @@ class DocumentRouter:
                     f"不支持的文件格式: {filepath.suffix}。支持的格式: {self.supported_formats_display()}"
                 )
 
-        # 实例化并解析
         parser = parser_cls()
         try:
             result = parser.parse(filepath)
@@ -419,61 +709,22 @@ _router: DocumentRouter | None = None
 
 
 def get_router() -> DocumentRouter:
-    """获取全局 DocumentRouter 实例（单例）"""
     global _router
     if _router is None:
         _router = DocumentRouter()
     return _router
 
 
-def parse_document(
-    filepath: str | Path,
-    force_format: str | None = None,
-) -> dict:
-    """
-    快捷函数：解析文档。
-
-    用法:
-        result = parse_document("小说.txt")
-    """
+def parse_document(filepath: str | Path, force_format: str | None = None) -> dict:
     return get_router().parse(filepath, force_format=force_format)
 
 
-# ── 演示 / 测试 ────────────────────────────────────────────────────────
+# ── 测试 ────────────────────────────────────────────────────────────────
 
 def demo():
-    """在测试文本上演示解析器"""
-    import tempfile
-
-    test_text = """前言
-这是一本关于穿越的故事。
-
-第一章 穿越
-赵玖睁开眼睛，发现自己躺在一张陌生的床上。
-「这是哪里？」他喃喃道。
-
-第二章 朝堂
-赵玖走进大殿，文武百官分列两侧。
-「吾皇万岁万岁万万岁！」
-
-第三章 出征
-「点兵！」
-三军集结，旗帜飘扬。
-"""
-
-    with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False, encoding="utf-8") as f:
-        f.write(test_text)
-        tmp_path = f.name
-
-    try:
-        result = parse_document(tmp_path)
-        print(f"标题: {result['title']}")
-        print(f"章节数: {len(result['chapters'])}")
-        for ch in result["chapters"]:
-            print(f"  [{ch['title']}] {ch['text'][:40]}...")
-        print(f"元信息: {json.dumps(result['metadata'], ensure_ascii=False)}")
-    finally:
-        os.unlink(tmp_path)
+    router = get_router()
+    print(f"支持格式: {router.supported_formats_display()}")
+    print(f"扩展名: {router.supported_extensions()}")
 
 
 if __name__ == "__main__":

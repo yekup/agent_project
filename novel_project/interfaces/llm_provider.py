@@ -174,7 +174,7 @@ class DeepSeekProvider(LLMProvider):
             content = self._call_llm(messages, temperature=temperature)
             return LLMResponse(
                 content=content,
-                model=self.config.model_name or "deepseek-chat",
+                model=self.config.model_name or "deepseek-v4-pro",
                 latency_ms=(time.time() - t0) * 1000,
                 provider_name=self.provider_name,
             )
@@ -202,7 +202,7 @@ class DeepSeekProvider(LLMProvider):
             return {
                 "status": "ok" if not resp.error else "down",
                 "latency_ms": (time.time() - t0) * 1000,
-                "model": self.config.model_name or "deepseek-chat",
+                "model": self.config.model_name or "deepseek-v4-pro",
                 "error": resp.error,
             }
         except Exception as e:
@@ -340,10 +340,22 @@ class LLMRouter:
         primary: LLMProvider,
         fallback: LLMProvider | None = None,
         strategy: FallbackStrategy = FallbackStrategy.FALLBACK_MODEL,
+        fallback_enabled: bool = False,
     ):
+        """
+        Args:
+            primary: 主 LLM Provider
+            fallback: 备胎 LLM Provider（可选）
+            strategy: 降级策略
+            fallback_enabled: 是否启用降级。
+                              False 时 primary 失败直接抛出异常，
+                              True 时才尝试 fallback/degrade。
+                              默认为 False，需手动修改代码或配置开启。
+        """
         self.primary = primary
         self.fallback = fallback
         self.strategy = strategy
+        self.fallback_enabled = fallback_enabled
 
     def chat(
         self,
@@ -357,9 +369,18 @@ class LLMRouter:
         if resp.error is None:
             return resp
 
-        # primary 失败，执行降级
+        # primary 失败
         logger.warning(f"[LLMRouter] Primary 失败: {resp.error}")
 
+        # 降级开关关闭时直接抛异常
+        if not self.fallback_enabled:
+            raise RuntimeError(
+                f"LLM 调用失败: {resp.error}\n"
+                f"降级策略已关闭（fallback_enabled=False），"
+                f"请在 config.yaml 或代码中开启后重试。"
+            )
+
+        # 降级开关开启，执行降级
         if self.strategy == FallbackStrategy.RAISE:
             raise RuntimeError(f"LLM primary unavailable: {resp.error}")
 
@@ -371,7 +392,6 @@ class LLMRouter:
             return fallback_resp
 
         if self.strategy == FallbackStrategy.DEGRADE:
-            # 降级模式：减少生成量 + 返回降级标记
             degrade_prompt = (
                 "【降级模式】请用最简洁的方式回答，"
                 "控制在 3 句话以内，仅引用已有资料。\n\n" + messages[-1]["content"]

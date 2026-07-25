@@ -1,68 +1,77 @@
 <!DOCTYPE html>
 <html lang="zh-CN">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>登录 - 网文图谱分析系统</title>
-    <script src="https://cdn.tailwindcss.com"></script>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>登录 - NovelGraph</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/font-awesome@4.7.0/css/font-awesome.min.css">
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          colors: { tech: { main: '#22d3ee', dark: '#0891b2', bg: '#0c1222', card: 'rgba(255,255,255,0.05)', border: 'rgba(34,211,238,0.2)', text: '#e2e8f0' } },
+          boxShadow: { glow: '0 0 18px rgba(34,211,238,0.15)' }
+        }
+      }
+    }
+  </script>
+  <style>
+    .glass { backdrop-filter: blur(12px); background: rgba(255,255,255,0.05); border: 1px solid rgba(34,211,238,0.2); border-radius: 12px; }
+    .btn-solid { background: #22d3ee; color: #0c1222; padding: 10px 24px; border-radius: 8px; transition: all 0.3s; font-weight: bold; }
+    .btn-solid:hover { background: #0891b2; box-shadow: 0 0 18px rgba(34,211,238,0.15); }
+    body { background: #0c1222; color: #e2e8f0; min-height: 100vh; display: flex; align-items: center; justify-content: center; }
+  </style>
 </head>
-<body class="bg-gray-900 text-white min-h-screen flex items-center justify-center">
-    <div class="bg-gray-800 p-8 rounded-lg border border-gray-700 w-full max-w-md">
-        <h1 class="text-2xl font-bold mb-2 text-center">📖 网文图谱分析系统</h1>
-        <p class="text-gray-400 text-center mb-6">请登录以继续</p>
-
-        <div id="errorMsg" class="bg-red-900/50 text-red-300 p-3 rounded mb-4 hidden"></div>
-
-        <form id="loginForm" class="space-y-4">
-            <div>
-                <label class="block text-sm text-gray-400 mb-1">用户名</label>
-                <input type="text" id="username" value="admin"
-                    class="w-full bg-gray-700 border border-gray-600 rounded px-3 py-2 focus:border-blue-500 focus:outline-none">
-            </div>
-            <div>
-                <label class="block text-sm text-gray-400 mb-1">密码</label>
-                <input type="password" id="password" value="admin123"
-                    class="w-full bg-gray-700 border border-gray-600 rounded px-3 py-2 focus:border-blue-500 focus:outline-none">
-            </div>
-            <button type="submit"
-                class="w-full bg-blue-600 hover:bg-blue-700 py-2 rounded font-bold transition">
-                登录
-            </button>
-        </form>
-
-        <p class="text-gray-500 text-xs text-center mt-4">
-            默认管理员: admin / admin123
-        </p>
+<body>
+  <div class="glass p-8 w-full max-w-sm">
+    <div class="text-center mb-6">
+      <i class="fa fa-sitemap text-[#22d3ee] text-4xl mb-3"></i>
+      <h1 class="text-2xl font-bold">NovelGraph</h1>
+      <p class="text-tech-text/60 text-sm mt-1">请登录以继续</p>
     </div>
 
-    <script>
-        document.getElementById('loginForm').addEventListener('submit', async (e) => {
-            e.preventDefault()
-            const username = document.getElementById('username').value
-            const password = document.getElementById('password').value
-            const errorEl = document.getElementById('errorMsg')
+    <div id="errorMsg" class="bg-red-900/30 text-red-300 p-3 rounded-lg mb-4 hidden text-sm"></div>
 
-            try {
-                const resp = await fetch('/api/auth/login', {
-                    method: 'POST',
-                    headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({username, password}),
-                })
-                const data = await resp.json()
+    <form id="loginForm" class="space-y-4">
+      <div>
+        <label class="block text-sm text-tech-text/60 mb-1">用户名</label>
+        <input type="text" id="username" value="admin" class="w-full px-4 py-2.5 rounded-lg bg-tech-card border border-tech-border text-white outline-none focus:border-[#22d3ee]">
+      </div>
+      <div>
+        <label class="block text-sm text-tech-text/60 mb-1">密码</label>
+        <input type="password" id="password" value="admin123" class="w-full px-4 py-2.5 rounded-lg bg-tech-card border border-tech-border text-white outline-none focus:border-[#22d3ee]">
+      </div>
+      <button type="submit" class="btn-solid w-full"><i class="fa fa-sign-in mr-2"></i>登录</button>
+    </form>
+    <p class="text-tech-text/40 text-xs text-center mt-4">默认管理员: admin / admin123</p>
+  </div>
 
-                if (resp.ok) {
-                    localStorage.setItem('token', data.token)
-                    localStorage.setItem('user', JSON.stringify(data.user))
-                    window.location.href = '/'
-                } else {
-                    errorEl.textContent = data.detail || '登录失败'
-                    errorEl.classList.remove('hidden')
-                }
-            } catch (err) {
-                errorEl.textContent = '网络错误: ' + err.message
-                errorEl.classList.remove('hidden')
-            }
-        })
-    </script>
+  <script>
+    document.getElementById('loginForm').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const username = document.getElementById('username').value;
+      const password = document.getElementById('password').value;
+      const errorEl = document.getElementById('errorMsg');
+      try {
+        const resp = await fetch('/api/auth/login', {
+          method: 'POST', headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({username, password})
+        });
+        const data = await resp.json();
+        if (resp.ok) {
+          localStorage.setItem('token', data.token);
+          localStorage.setItem('user', JSON.stringify(data.user));
+          window.location.href = '/';
+        } else {
+          errorEl.textContent = data.detail || '登录失败';
+          errorEl.classList.remove('hidden');
+        }
+      } catch (err) {
+        errorEl.textContent = '网络错误: ' + err.message;
+        errorEl.classList.remove('hidden');
+      }
+    });
+  </script>
 </body>
 </html>

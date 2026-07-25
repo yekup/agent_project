@@ -5,6 +5,7 @@
 """
 
 import json
+import logging
 import os
 import re
 
@@ -13,21 +14,23 @@ import re
 
 import networkx as nx
 
+logger = logging.getLogger(__name__)
+
 def _build_alias_map(wiki_entries):
     """
     基于共现关系和角色描述构建别名映射。
 
     规则:
-        1. 如果两个人物名在同一章节出现且 role 相同，可能是同一人
-        2. 如果人物名 A 包含在人物名 B 中（如"萧炎"和"萧炎小子"），自动合并
-        3. 对高频人名做简单模糊匹配（去掉括号/备注后匹配）
+        1. 如果人物名 A 包含在人物名 B 中（如"萧炎"和"萧炎小子"），自动合并
+        2. 如果两个人物名在同一章节出现且 role 相同，可能是同一人
+        3. 姓氏相同 + 高频(主角) + 低频(配角/路人) → 低频合并到高频
+        4. 对高频人名做简单模糊匹配（去掉括号/备注后匹配）
 
     返回:
         dict: {规范名: [别名列表]}
     """
-    # 先收集所有人名
     all_names = set()
-    name_info = {}  # name -> [(chapters, roles)]
+    name_info = {}
 
     for entry in wiki_entries:
         ch_title = entry.get("chapter_title", "")
@@ -39,14 +42,13 @@ def _build_alias_map(wiki_entries):
             name_info[name]["chapters"].add(ch_title)
             name_info[name]["roles"].add(c.get("role", ""))
 
-    # 构建别名映射
     alias_map = {}
     names_list = sorted(all_names, key=lambda n: -len(name_info[n]["chapters"]))
 
     for i, name in enumerate(names_list):
         if name in alias_map:
             continue
-        canonical = name  # 规范名：出场最多的那个
+        canonical = name
         alias_map[canonical] = []
         clean_canonical = name.split("（")[0].split("(")[0]
 
@@ -55,21 +57,27 @@ def _build_alias_map(wiki_entries):
                 continue
             clean_other = other.split("（")[0].split("(")[0]
 
-            # 规则1: 包含关系
-            if clean_canonical and clean_other and (
-                clean_canonical in clean_other or clean_other in clean_canonical
-            ):
-                alias_map[canonical].append(other)
-                alias_map[other] = canonical if isinstance(alias_map.get(other), list) else []
-                continue
+            # 规则1: 包含关系（一个名字是另一个的子串，且不是单一姓氏）
+            # "赵玖" → "赵玖（官家）"、"萧炎" → "萧炎小子"
+            if clean_canonical and clean_other and len(clean_canonical) >= 2 and len(clean_other) >= 2:
+                if clean_canonical in clean_other or clean_other in clean_canonical:
+                    alias_map[canonical].append(other)
+                    alias_map[other] = canonical
+                    continue
 
-            # 规则2: 角色相同且共现章节 > 50%
-            common = name_info[name]["chapters"] & name_info[other]["chapters"]
-            if (name_info[name]["roles"] == name_info[other]["roles"]
-                    and len(common) > 0
-                    and name_info[name]["roles"] != {"提及人物"}):
-                alias_map[canonical].append(other)
-                alias_map[other] = canonical
+            # 规则2（保守）: 姓氏相同 + 只出场1章 + 高频角色合并
+            # "赵玖"和"赵管家"：共享"赵"，管家只出现1章
+            if clean_canonical and clean_other and len(clean_canonical) >= 2 and len(clean_other) >= 2:
+                if (clean_canonical[0] == clean_other[0] and clean_canonical != clean_other
+                        and clean_canonical not in clean_other and clean_other not in clean_canonical):
+                    other_count = len(name_info[other]["chapters"])
+                    canonical_count = len(name_info[name]["chapters"])
+                    # 只出场 1 章 + 高频 > 50 章 + 低频不是主角
+                    if (other_count <= 1 and canonical_count > 50
+                            and "主角" not in name_info[other]["roles"]):
+                        alias_map[canonical].append(other)
+                        alias_map[other] = canonical
+                        continue
 
     return alias_map
 
@@ -151,6 +159,10 @@ def merge_relationships(wiki_entries, alias_map=None):
                     "chapters": [],
                     "weight": 0,
                 }
+            else:
+                # 关系随剧情演化（敌→友等）：描述以最新章节的提取为准，
+                # 权重仍累计全部出场次数
+                rel_map[key]["relation"] = r["relation"]
             rel_map[key]["chapters"].append(chapter_title)
             rel_map[key]["weight"] += 1
 
@@ -166,9 +178,10 @@ def build_graph(char_map, relationships):
         relationships: merge_relationships 的输出
     
     返回:
-        networkx.Graph 对象
+        networkx.DiGraph 对象（有向图：'A 是 B 的父亲' 与反向语义不同，
+        历史版本用无向 Graph 会丢失关系方向）
     """
-    G = nx.Graph()
+    G = nx.DiGraph()
 
     # 添加节点（人物）
     for name, info in char_map.items():
@@ -180,6 +193,7 @@ def build_graph(char_map, relationships):
         )
 
     # 添加边（关系）
+    dropped = 0
     for r in relationships:
         if r["source"] in char_map and r["target"] in char_map:
             G.add_edge(
@@ -189,8 +203,12 @@ def build_graph(char_map, relationships):
                 weight=r["weight"],
                 chapters=r["chapters"],
             )
+        else:
+            dropped += 1
+    if dropped:
+        logger.warning(f"  ⚠️ {dropped} 条关系因端点人物缺失被丢弃")
 
-    print(f"图构建完成：{G.number_of_nodes()} 个节点, {G.number_of_edges()} 条边")
+    logger.info(f"图构建完成：{G.number_of_nodes()} 个节点, {G.number_of_edges()} 条边")
     return G
 
 
@@ -215,15 +233,15 @@ def save_graph(G, filepath):
     }
     with open(filepath, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
-    print(f"图已保存: {filepath} ({len(data['nodes'])} 节点, {len(data['edges'])} 条边)")
+    logger.info(f"图已保存: {filepath} ({len(data['nodes'])} 节点, {len(data['edges'])} 条边)")
     return data
 
 
 def load_graph(filepath):
-    """从 JSON 加载图"""
+    """从 JSON 加载图（DiGraph，与 build_graph 一致保留方向）"""
     with open(filepath, "r", encoding="utf-8") as f:
         data = json.load(f)
-    G = nx.Graph()
+    G = nx.DiGraph()
     for n in data["nodes"]:
         name = n.pop("name")
         G.add_node(name, **n)
@@ -231,7 +249,7 @@ def load_graph(filepath):
         source = e.pop("source")
         target = e.pop("target")
         G.add_edge(source, target, **e)
-    print(f"图已加载: {G.number_of_nodes()} 节点, {G.number_of_edges()} 条边")
+    logger.info(f"图已加载: {G.number_of_nodes()} 节点, {G.number_of_edges()} 条边")
     return G
 
     

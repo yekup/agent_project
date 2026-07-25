@@ -583,7 +583,7 @@ class CostTracker:
             lines.append(f"  剩余:            ${r['budget_remaining_usd']:.4f}")
             lines.append(f"  是否耗尽:        {'是' if r['is_budget_exhausted'] else '否'}")
         lines.append("=" * 50)
-        print("\n".join(lines))
+        logger.info("\n".join(lines))
 
 
 # ── 测试 ────────────────────────────────────────────────────────────────

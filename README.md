@@ -15,7 +15,7 @@
 | 🧠 **Wiki 编译** | LLM 逐章提取人物/事件/关系，长章语义分块 + 子块级断点 + 增量编译 + Token 预算控制 |
 | 🕸️ **知识图谱** | Cytoscape.js 驱动，双布局（cose 全图 / concentric 聚焦），自适应参数，缩放标签联动 |
 | 🔍 **三级检索** | Wiki 摘要 → 知识图谱 → 向量语义检索（ChromaDB），多查询扩展 + 跨书共查 |
-| 🤖 **多 Agent** | Coordinator 意图识别 → Researcher 多源检索 → Writer 生成报告（首轮跳过审核，加速响应） |
+| 🤖 **多 Agent** | Coordinator 意图识别 → Researcher 多源检索 → Writer 生成报告 → Reviewer 质量审核 + 分类修复 |
 | 💬 **智能问答** | SSE 流式输出、Markdown 渲染、语义缓存（相似问题秒回）、分段式上下文管理 |
 | 🔗 **MCP Server** | 5 个 Tool 暴露给 Cursor / Claude Desktop |
 | 📊 **RAG 评估** | LLM-as-Judge 评估 faithfulness，黄金测试集 + 回归门禁 |
@@ -43,8 +43,8 @@
 
 ```bash
 # 1. Clone
-git clone https://github.com/yekup/agent_project.git
-cd agent_project
+git clone https://github.com/yekup/novel-graphrag.git
+cd novel-graphrag
 
 # 2. 创建虚拟环境
 python -m venv .venv
@@ -62,7 +62,9 @@ copy .env.template .env
 cd novel_project && python run.py
 ```
 
-打开 http://localhost:8000 (默认管理员 admin / admin123)
+打开 http://localhost:8000 — 首次启动会自动创建管理员 `admin`：密码取环境变量 `ADMIN_PASSWORD`；未设置时自动生成随机密码并打印到控制台。
+
+> Open http://localhost:8000 — on first launch an `admin` account is created: the password comes from the `ADMIN_PASSWORD` env var, or a random one is generated and printed to the console if unset.
 
 ### 支持的文档格式
 

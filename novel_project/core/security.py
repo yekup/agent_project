@@ -28,23 +28,85 @@ class JWTHandler:
     """
     JWT 签发与验证。
 
-    与 run.py 的 os.urandom(32).hex() 不同:
-      本实现从配置文件/环境变量读取持久化密钥，
-      重启后 Token 仍然有效。
+    密钥解析优先级:
+      1. 显式传入的 secret 参数
+      2. 环境变量 JWT_SECRET
+      3. config.yaml 的 auth.jwt_secret
+      4. data/.jwt_secret 文件（首次启动自动生成随机密钥并持久化，
+         重启后 Token 仍然有效）
+
+    注意: 不再提供源码内硬编码的默认密钥 —— 公开仓库里的固定密钥
+    意味着任何人都能离线伪造任意角色的 Token。
     """
 
+    _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    _SECRET_FILE = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+        "data", ".jwt_secret",
+    )
+
+    # 历史代码/配置中出现过的占位密钥，即使被显式配置也拒绝使用
+    _PLACEHOLDER_SECRETS = frozenset({
+        "",
+        "default-dev-secret",
+        "change-me-in-production-must-be-32-chars-min",
+        "novel-graphrag-dev-secret-change-in-production",
+    })
+
     def __init__(self, secret: str = "", algorithm: str = "HS256", expire_hours: int = 72):
-        self.secret = secret or os.environ.get(
-            "JWT_SECRET",
-            "change-me-in-production-must-be-32-chars-min",
-        )
+        self.secret = self._resolve_secret(secret)
         self.algorithm = algorithm
         self.expire_hours = expire_hours
+
+    @classmethod
+    def _is_usable(cls, secret: str) -> bool:
+        return bool(secret) and secret not in cls._PLACEHOLDER_SECRETS
+
+    @classmethod
+    def _resolve_secret(cls, secret: str) -> str:
+        if cls._is_usable(secret):
+            return secret
+        env_secret = os.environ.get("JWT_SECRET", "")
+        if cls._is_usable(env_secret):
+            return env_secret
+        try:
+            cfg = load_config(os.path.join(cls._REPO_ROOT, "config.yaml"))
+            cfg_secret = (cfg.get("auth") or {}).get("jwt_secret", "")
+            if cls._is_usable(cfg_secret):
+                return cfg_secret
+        except Exception:
+            pass
+        return cls._load_or_create_secret_file()
+
+    @classmethod
+    def _load_or_create_secret_file(cls) -> str:
+        try:
+            if os.path.exists(cls._SECRET_FILE):
+                with open(cls._SECRET_FILE, "r", encoding="utf-8") as f:
+                    existing = f.read().strip()
+                if cls._is_usable(existing):
+                    return existing
+            import secrets as _secrets
+            os.makedirs(os.path.dirname(cls._SECRET_FILE), exist_ok=True)
+            generated = _secrets.token_hex(32)
+            with open(cls._SECRET_FILE, "w", encoding="utf-8") as f:
+                f.write(generated)
+            logger.warning(
+                "JWT_SECRET 未配置，已生成随机密钥并持久化到 %s；"
+                "生产环境请通过环境变量 JWT_SECRET 显式配置", cls._SECRET_FILE,
+            )
+            return generated
+        except Exception as e:
+            # 无法持久化时退回进程级随机密钥: 重启后旧 Token 失效，但仍不可伪造
+            import secrets as _secrets
+            logger.error("JWT 密钥持久化失败 (%s)，使用进程级随机密钥", e)
+            return _secrets.token_hex(32)
 
     def encode(self, payload: dict) -> str:
         """签发 JWT"""
         import jwt as pyjwt
-        payload = {**payload, "exp": datetime.utcnow() + timedelta(hours=self.expire_hours)}
+        from datetime import timezone
+        payload = {**payload, "exp": datetime.now(timezone.utc) + timedelta(hours=self.expire_hours)}
         return pyjwt.encode(payload, self.secret, algorithm=self.algorithm)
 
     def decode(self, token: str) -> dict | None:
@@ -76,47 +138,56 @@ ROLE_HIERARCHY = {
 }
 
 
-class PermissionMiddleware:
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.responses import JSONResponse as StarletteJSONResponse
+
+
+class PermissionMiddleware(BaseHTTPMiddleware):
     """
     FastAPI 权限拦截中间件。
 
     注册方式:
         app.add_middleware(PermissionMiddleware)
 
-    或者在路由层使用:
-        @router.post("/api/admin")
-        @require_role("admin")
-        async def admin_api(): ...
-
     权限等级:
         admin  > editor > viewer > api
+
+    公开路径采用「精确匹配 + 显式前缀」两级，避免前缀列表里的
+    "/" 把所有请求都匹配成公开（历史 bug：全站 API 匿名可调）。
     """
 
-    def __init__(self, public_paths: list[str] | None = None):
-        self.public_paths = public_paths or [
-            "/", "/static/", "/api/login", "/api/register",
-            "/docs", "/openapi.json", "/health",
-        ]
+    # 精确匹配的公开路径：页面 HTML 与认证接口
+    DEFAULT_PUBLIC_PATHS = frozenset({
+        "/", "/login", "/graph", "/chat", "/upload",
+        "/health", "/docs", "/openapi.json",
+        "/api/auth/login", "/api/auth/register", "/api/auth/me",
+    })
+    # 前缀匹配的公开路径：静态资源
+    DEFAULT_PUBLIC_PREFIXES = ("/static/",)
+
+    def __init__(self, app, public_paths: list[str] | None = None,
+                 public_prefixes: tuple[str, ...] | None = None):
+        super().__init__(app)
+        self.exact_paths = frozenset(public_paths) if public_paths else self.DEFAULT_PUBLIC_PATHS
+        self.prefix_paths = public_prefixes if public_prefixes else self.DEFAULT_PUBLIC_PREFIXES
         self.jwt = JWTHandler.get_default()
 
-    async def __call__(self, request, call_next):
+    async def dispatch(self, request, call_next):
         path = request.url.path
 
-        # 公开路径直接放行
-        if any(path.startswith(p) for p in self.public_paths):
+        # 公开路径直接放行（精确匹配 / 显式前缀）
+        if path in self.exact_paths or any(path.startswith(p) for p in self.prefix_paths):
             return await call_next(request)
 
         # 验证 JWT
         auth = request.headers.get("Authorization", "")
         if not auth.startswith("Bearer "):
-            from fastapi.responses import JSONResponse
-            return JSONResponse(status_code=401, content={"detail": "未提供认证 Token"})
+            return StarletteJSONResponse(status_code=401, content={"detail": "未提供认证 Token"})
 
         token = auth[7:]
         payload = self.jwt.decode(token)
         if payload is None:
-            from fastapi.responses import JSONResponse
-            return JSONResponse(status_code=401, content={"detail": "Token 无效或已过期"})
+            return StarletteJSONResponse(status_code=401, content={"detail": "Token 无效或已过期"})
 
         # 注入用户信息到 request.state
         request.state.user = payload
@@ -230,7 +301,7 @@ class FileValidator:
         5. 文件大小限制
     """
 
-    ALLOWED_EXTENSIONS = {".txt"}
+    ALLOWED_EXTENSIONS = {".txt", ".docx", ".doc", ".pdf", ".md", ".markdown"}
     MAX_SIZE_MB = 100
 
     @classmethod
@@ -258,11 +329,19 @@ class FileValidator:
         if len(content) > cls.MAX_SIZE_MB * 1024 * 1024:
             return {"valid": False, "error": f"文件超过 {cls.MAX_SIZE_MB}MB 限制"}
 
-        # 5. 文件内容校验（检查是否是二进制）
-        try:
-            content.decode("utf-8")
-        except UnicodeDecodeError:
-            return {"valid": False, "error": "文件包含非 UTF-8 编码字符，请上传纯文本文件"}
+        # 5. 文件内容校验（仅 .txt 检查编码，docx/pdf/md 由对应解析器处理）
+        ext = os.path.splitext(filename)[1].lower()
+        if ext == ".txt":
+            decoded = False
+            for enc in ["utf-8", "gbk", "gb18030"]:
+                try:
+                    content.decode(enc)
+                    decoded = True
+                    break
+                except UnicodeDecodeError:
+                    continue
+            if not decoded:
+                return {"valid": False, "error": "无法识别的文件编码，请上传 UTF-8 或 GBK 编码的纯文本文件"}
 
         return {"valid": True}
 
@@ -286,6 +365,55 @@ class FileValidator:
             raise PermissionError(f"路径越界: {safe_dir}")
         os.makedirs(resolved, exist_ok=True)
         return str(resolved)
+
+
+# ===========================================================================
+# 密码哈希（bcrypt，兼容旧版无盐 sha256）
+# ===========================================================================
+
+def hash_password(password: str) -> str:
+    """bcrypt 哈希（含随机盐），用于新密码入库"""
+    import bcrypt
+    return bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt()).decode("ascii")
+
+
+def is_legacy_hash(stored: str) -> bool:
+    """是否为旧版无盐 sha256 哈希（64 位十六进制）"""
+    return bool(re.fullmatch(r"[0-9a-f]{64}", stored or ""))
+
+
+def verify_password(password: str, stored: str) -> bool:
+    """
+    验证明文密码。同时支持 bcrypt 与旧版 sha256，
+    使存量用户在透明迁移完成前仍能登录。
+    """
+    if not stored:
+        return False
+    if is_legacy_hash(stored):
+        digest = hashlib.sha256(password.encode("utf-8")).hexdigest()
+        return hmac.compare_digest(digest, stored)
+    try:
+        import bcrypt
+        return bcrypt.checkpw(password.encode("utf-8"), stored.encode("ascii"))
+    except Exception:
+        return False
+
+
+# ===========================================================================
+# 资源名校验（防路径穿越）
+# ===========================================================================
+
+_NAME_FORBIDDEN = re.compile(r"\.\.|[\\/\x00]")
+
+
+def validate_path_name(name: str, kind: str = "资源名") -> str:
+    """
+    校验用于拼接文件路径的名字（小说名 / 文件名），防路径穿越。
+    合法则原样返回，非法抛 ValueError。
+    """
+    if not name or len(name) > 200 or _NAME_FORBIDDEN.search(name):
+        raise ValueError(f"{kind}不合法")
+    return name
 
 
 # ===========================================================================
@@ -352,51 +480,54 @@ class TokenBucket:
             del self._buckets[k]
 
 
-class RateLimitMiddleware:
+class RateLimitMiddleware(BaseHTTPMiddleware):
     """
-    FastAPI 限流中间件。
+    FastAPI 限流中间件（BaseHTTPMiddleware 实现）。
 
     注册:
         app.add_middleware(RateLimitMiddleware, rate=60, burst=100)
 
-    支持三级限流:
-        - 用户级: 根据 user_id
-        - IP 级:  根据客户端 IP
-        - 接口级: 根据请求路径
+    限流 key: 已认证用户按 user_id，否则按客户端 IP（对登录接口同样生效，
+    可抑制口令暴破）。rate 单位为「次/分钟」。
     """
 
     def __init__(
         self,
+        app,
         rate: float = 60,
         burst: int = 100,
-        exclude_paths: list[str] | None = None,
+        exclude_paths: tuple[str, ...] | None = None,
     ):
+        super().__init__(app)
         self.bucket = TokenBucket(rate=rate / 60, burst=burst)
-        self.exclude_paths = exclude_paths or ["/health", "/static/"]
+        self.exclude_paths = exclude_paths or ("/health", "/static/")
+        self._req_count = 0
 
-    async def __call__(self, request, call_next):
+    async def dispatch(self, request, call_next):
         path = request.url.path
         if any(path.startswith(p) for p in self.exclude_paths):
             return await call_next(request)
 
-        # 三级限流 key
-        user_key = getattr(request.state, "user_id", "") if hasattr(request.state, "user_id") else ""
-        ip_key = request.client.host if request.client else "unknown"
-        path_key = path.split("/")[1] if path else "root"
+        # 定期清理过期桶，防内存无限增长（每 1000 请求一次）
+        self._req_count += 1
+        if self._req_count >= 1000:
+            self._req_count = 0
+            self.bucket.cleanup()
 
-        # 组合 key: user > ip > path
-        limit_key = user_key or ip_key or path_key
+        # 限流 key: 用户 > IP
+        user_key = getattr(request.state, "user_id", "") or ""
+        ip_key = request.client.host if request.client else "unknown"
+        limit_key = user_key or ip_key
 
         if not self.bucket.allow(limit_key):
-            from fastapi.responses import JSONResponse
             wait = self.bucket.get_wait_time(limit_key)
-            return JSONResponse(
+            return StarletteJSONResponse(
                 status_code=429,
                 content={
                     "detail": "请求过于频繁",
                     "retry_after_seconds": round(wait, 1),
                 },
-                headers={"Retry-After": str(int(wait))},
+                headers={"Retry-After": str(max(1, int(wait)))},
             )
 
         return await call_next(request)
@@ -410,6 +541,7 @@ SENSITIVE_PATTERNS = [
     (r"(api_key|apikey|secret|password|token)=[\"']?[^&\s\"']+", r"\1=***"),
     (r"(Authorization:\s*Bearer\s+)\S+", r"\1***"),
     (r"DEEPSEEK_API_KEY[=:]\s*\S+", "DEEPSEEK_API_KEY=***"),
+    (r"DASHSCOPE_API_KEY[=:]\s*\S+", "DASHSCOPE_API_KEY=***"),
 ]
 
 
@@ -458,3 +590,61 @@ def load_config(path: str = "config.yaml") -> dict:
     except Exception as e:
         logger.error(f"配置加载失败: {e}")
         return {}
+
+
+# ═══════════════════════════════════════════════════════════════════
+#  审计日志
+# ═══════════════════════════════════════════════════════════════════
+
+AUDIT_LOG_PATH = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+    "data", "logs", "audit.log",
+)
+
+
+def audit_log(
+    action: str,
+    user: str,
+    resource: str,
+    detail: str = "",
+    status: str = "success",
+    failure_type: str = "",
+):
+    """
+    记录操作审计日志。
+
+    双写策略:
+      1. DB 层 (audit.json) — 支持结构化查询
+      2. 文本文件 (audit.log) — 支持 tail 实时监控
+    """
+    # ── 写入 DB (JSON 后端 / MySQL) ──
+    try:
+        from core.db import get_db
+        from core.db.models import AuditLogModel
+        log = AuditLogModel(
+            action=action, username=user,
+            resource=resource, detail=detail, status=status,
+        )
+        get_db().save_audit_log(log)
+    except Exception as e:
+        logger.error(f"审计日志写入 DB 失败: {e}")
+
+    # ── 写入文本审计日志 (data/logs/audit.log) ──
+    try:
+        from datetime import timezone
+        log_dir = os.path.dirname(AUDIT_LOG_PATH)
+        os.makedirs(log_dir, exist_ok=True)
+        entry = {
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "action": action,
+            "user": user,
+            "resource": resource,
+            "detail": detail,
+            "status": status,
+        }
+        if failure_type:
+            entry["failure_type"] = failure_type
+        with open(AUDIT_LOG_PATH, "a", encoding="utf-8") as f:
+            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    except Exception as e:
+        logger.error(f"审计日志写入文件失败: {e}")

@@ -237,7 +237,7 @@ class NovelChunker:
                         chapter_index=ch.get("chapter_index", 0),
                         chapter_title=ch.get("chapter_title", ""),
                         metadata={
-                            "characters": [c["name"] for c in ch.get("characters", [])[:5]],
+                            "characters": [c.get("name") for c in ch.get("characters", [])[:5] if c.get("name")],
                             "events": ch.get("events", [])[:3],
                         },
                     ))
@@ -522,6 +522,12 @@ class VectorStoreIndexer:
         # 只索引原文段落级分块（不索引摘要类块）
         para_chunks = [c for c in chunks if c.level == "paragraph"]
 
+        # 幂等重建：先清掉该书的旧索引，避免重复 ID 报错与陈旧数据残留
+        try:
+            self._collection.delete(where={"novel_key": novel_key})
+        except Exception as e:
+            logger.warning(f"[VectorStoreIndexer] 清理旧索引失败（忽略）: {e}")
+
         # 批量写入（每批 500 条）
         batch_size = 500
         total = 0
@@ -549,7 +555,7 @@ class VectorStoreIndexer:
     def search(
         self,
         query: str,
-        top_k: int = 5,
+        top_k: int = 20,
         novel_key: str | None = None,
     ) -> list[dict]:
         """

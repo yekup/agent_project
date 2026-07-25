@@ -258,25 +258,60 @@ def generate_golden_samples(novel_key: str = "shaosong", output_path: str = "") 
     if not output_path:
         output_path = f"data/eval/golden/{novel_key}.json"
 
-    from mcp_server import get_novel  # 复用 MCP 数据加载
-    data = get_novel(novel_key)
+    # 直接加载 Wiki 数据，不依赖 mcp_server
+    import glob
+    import json
+    from pathlib import Path
+
+    # 中文名映射
+    cn_name_map = {
+        "shaosong": "绍宋",
+        "斗破苍穹": "斗破苍穹",
+        "神印王座": "神印王座",
+    }
+    cn_name = cn_name_map.get(novel_key, novel_key)
+
+    # 找 Wiki 文件（尝试中文名和英文名）
+    wiki_files = list(Path("data/wiki").glob(f"*{cn_name}*hierarchical*"))
+    if not wiki_files:
+        wiki_files = list(Path("data/wiki").glob(f"*{novel_key}*hierarchical*"))
+    graph_files = list(Path("data/wiki").glob(f"*{cn_name}*graph*"))
+    if not graph_files:
+        graph_files = list(Path("data/wiki").glob(f"*{novel_key}*graph*"))
+    wiki_data = {"book": {}, "volumes": [], "chapters": []}
+    graph_data = {"nodes": [], "edges": []}
+
+    if wiki_files:
+        with open(wiki_files[0], "r", encoding="utf-8") as f:
+            raw = json.load(f)
+        if isinstance(raw, dict) and "chapters" in raw:
+            wiki_data = raw
+        elif isinstance(raw, list):
+            wiki_data["chapters"] = raw
+    if graph_files:
+        with open(graph_files[0], "r", encoding="utf-8") as f:
+            graph_data = json.load(f)
+
+    book = wiki_data.get("book", {})
+    volumes = wiki_data.get("volumes", [])
+    chapters = wiki_data.get("chapters", [])
+
+    display_names_eval = {"shaosong": "绍宋", "斗破苍穹": "斗破苍穹", "神印王座": "神印王座"}
+    display_name = display_names_eval.get(novel_key, novel_key)
 
     samples = []
-    book = data.book_summary
-    volumes = data.volumes
-    chapters = data.chapters
 
     # 1. 全书级问题
     if book and book.get("summary"):
         samples.append(EvalSample(
-            query=f"《{data.display_name}》讲述了什么故事？",
+            query=f"《{display_name}》讲述了什么故事？",
             answer=book["summary"],
             contexts=[book["summary"]],
             metadata={"type": "book_summary", "novel": novel_key},
         ))
         for mc in book.get("main_characters", []):
             samples.append(EvalSample(
-                query=f"{mc} 是《{data.display_name}》中的什么角色？",
+                query=f"{mc} 是《{display_name}》中的什么角色？",
                 answer=f"{mc} 是小说的主要角色之一。",
                 contexts=[book["summary"]],
                 metadata={"type": "main_character", "novel": novel_key},
@@ -296,25 +331,27 @@ def generate_golden_samples(novel_key: str = "shaosong", output_path: str = "") 
             ))
 
     # 3. 人物关系问题（从图谱取 top 人物）
-    if data.nodes:
-        top_chars = sorted(data.nodes, key=lambda n: -n.get("mention_count", 0))[:10]
+    nodes_list = graph_data.get("nodes", [])
+    edges_list = graph_data.get("edges", [])
+
+    if nodes_list:
+        top_chars = sorted(nodes_list, key=lambda n: -n.get("mention_count", 0))[:10]
         for char in top_chars:
             name = char["name"]
-            rels = data.get_character_relations(name)
+            # 找关联
+            rels = [e for e in edges_list if e.get("source") == name or e.get("target") == name]
             if rels:
                 top_rel = rels[0]
-                chap_summaries = []
-                for ch in data.get_character_appearances(name)[:3]:
-                    chap_summaries.append(ch.get("summary", "")[:100])
-                sample_answer = f"{name} 与 {top_rel['character']} 的关系是: {top_rel['relation']}"
+                partner = top_rel["target"] if top_rel["source"] == name else top_rel["source"]
+                sample_answer = f"{name} 与 {partner} 的关系是: {top_rel.get('relation', '')}"
                 samples.append(EvalSample(
-                    query=f"{name} 和 {top_rel['character']} 是什么关系？",
+                    query=f"{name} 和 {partner} 是什么关系？",
                     answer=sample_answer,
-                    contexts=chap_summaries + [top_rel.get("relation", "")],
+                    contexts=[top_rel.get("relation", "")],
                     metadata={
                         "type": "character_relation",
                         "character": name,
-                        "target": top_rel["character"],
+                        "target": partner,
                     },
                 ))
 

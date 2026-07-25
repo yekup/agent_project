@@ -1,0 +1,114 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>NovelGraph · 首页</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/font-awesome@4.7.0/css/font-awesome.min.css">
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          colors: {
+            tech: {
+              main: '#22d3ee',
+              dark: '#0891b2',
+              bg: '#0c1222',
+              card: 'rgba(255,255,255,0.05)',
+              border: 'rgba(34,211,238,0.2)',
+              text: '#e2e8f0'
+            }
+          },
+          boxShadow: {
+            'glow': '0 0 18px rgba(34,211,238,0.15)'
+          }
+        }
+      }
+    }
+  </script>
+  <style type="text/tailwindcss">
+    @layer utilities {
+      .glass {
+        @apply backdrop-blur-md bg-tech-card border border-tech-border rounded-xl;
+      }
+      .btn-tech {
+        @apply bg-tech-main/10 border border-tech-main/40 text-tech-main px-5 py-2 rounded-lg hover:bg-tech-main/20 hover:shadow-glow transition-all duration-300;
+      }
+      .btn-solid {
+        @apply bg-tech-main text-tech-bg px-5 py-2 rounded-lg hover:bg-tech-dark hover:shadow-glow transition-all duration-300;
+      }
+      .nav-link {
+        @apply px-4 py-2 rounded-lg text-tech-text/70 hover:text-tech-main hover:bg-tech-main/5 transition-all;
+      }
+      .nav-active {
+        @apply text-tech-main bg-tech-main/10;
+      }
+    }
+    body {
+      @apply bg-tech-bg text-tech-text min-h-screen flex flex-col;
+    }
+  </style>
+</head>
+<body class="flex flex-col min-h-screen">
+  <!-- 导航栏 -->
+  <nav class="glass mx-6 mt-6 px-6 py-3 sticky top-0 z-50">
+    <div class="flex items-center justify-between">
+      <a href="index.html" class="flex items-center gap-3">
+        <i class="fa fa-sitemap text-tech-main text-2xl"></i>
+        <span class="text-xl font-bold tracking-wide">NovelGraph</span>
+      </a>
+      <div class="flex gap-2">
+        <a href="index.html" class="nav-link nav-active">首页</a>
+        <a href="upload.html" class="nav-link">上传解析</a>
+        <a href="graph.html" class="nav-link">关系图谱</a>
+        <a href="chat.html" class="nav-link">AI问答</a>
+      </div>
+      <div class="text-tech-text/60 text-sm">Admin</div>
+    </div>
+  </nav>
+
+  <!-- 主内容 -->
+  <main class="flex-1 flex flex-col items-center justify-center px-8 py-20">
+    <div class="text-center max-w-3xl">
+      <h1 class="text-5xl font-bold mb-6 bg-gradient-to-r from-tech-main to-white bg-clip-text text-transparent">
+        小说智能图谱解析系统
+      </h1>
+      <p class="text-tech-text/60 text-lg mb-10 leading-relaxed">
+        基于 GraphRAG + DeepSeek AI，自动解析 TXT / PDF / 实体扫描件，生成可视化人物关系图谱，助力考据、创作、剧情梳理
+      </p>
+      <div class="flex justify-center gap-4 mb-16">
+        <a href="upload.html" class="btn-solid text-lg px-8 py-3">
+          <i class="fa fa-upload mr-2"></i>开始解析
+        </a>
+        <a href="graph.html" class="btn-tech text-lg px-8 py-3">
+          <i class="fa fa-eye mr-2"></i>查看图谱
+        </a>
+      </div>
+    </div>
+
+    <!-- 功能卡片 -->
+    <div class="grid grid-cols-3 gap-6 w-full max-w-5xl">
+      <div class="glass p-6 hover:shadow-glow transition-all">
+        <i class="fa fa-file-text-o text-tech-main text-3xl mb-4"></i>
+        <h3 class="text-lg font-semibold mb-2">全格式文档解析</h3>
+        <p class="text-tech-text/60 text-sm">支持 TXT、可复制PDF、离线OCR扫描件，无需付费API</p>
+      </div>
+      <div class="glass p-6 hover:shadow-glow transition-all">
+        <i class="fa fa-cubes text-tech-main text-3xl mb-4"></i>
+        <h3 class="text-lg font-semibold mb-2">自适应智能布局</h3>
+        <p class="text-tech-text/60 text-sm">自动适配几十~数千节点，派系聚类、无堆叠、形态美观</p>
+      </div>
+      <div class="glass p-6 hover:shadow-glow transition-all">
+        <i class="fa fa-comments-o text-tech-main text-3xl mb-4"></i>
+        <h3 class="text-lg font-semibold mb-2">AI 语义问答</h3>
+        <p class="text-tech-text/60 text-sm">基于全书知识库，问答人物关系、势力、剧情脉络</p>
+      </div>
+    </div>
+  </main>
+
+  <footer class="text-center py-6 text-tech-text/40 text-sm">
+    NovelGraph · GraphRAG 网文智能图谱系统
+  </footer>
+</body>
+</html>

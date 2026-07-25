@@ -73,7 +73,7 @@ class PreferencePair:
 class TrainingRun:
     """一次微调训练的元信息"""
     run_id: str
-    base_model: str                # 基座模型名，如 "deepseek-chat"
+    base_model: str                # 基座模型名，如 "deepseek-v4-pro"
     dataset_size: int              # 偏好对数量
     train_loss: float | None = None
     eval_metric: dict = field(default_factory=dict)
@@ -330,7 +330,7 @@ class RLHFPipeline(abc.ABC):
         self,
         novel_name: str,
         min_feedback: int = 50,
-        base_model: str = "deepseek-chat",
+        base_model: str = "deepseek-v4-pro",
     ) -> TrainingRun | None:
         """
         执行完整 RLHF 周期。

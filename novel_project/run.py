@@ -10,12 +10,11 @@ sys.path.insert(0, os.path.dirname(BASE_DIR))
 import uvicorn
 
 if __name__ == "__main__":
-    # JWT密钥：优先从环境变量读取，不再用 os.urandom（重启后token有效）
-    jwt_secret = os.environ.get("JWT_SECRET", "")
-    if not jwt_secret:
-        jwt_secret = "novel-graphrag-dev-secret-change-in-production"
-        print("[WARN] 使用默认 JWT_SECRET，生产环境请设置环境变量")
-    os.environ.setdefault("JWT_SECRET", jwt_secret)
+    # JWT 密钥由 core.security.JWTHandler 统一解析:
+    # 环境变量 JWT_SECRET → config.yaml → data/.jwt_secret（自动生成并持久化）。
+    # 此处不再注入任何硬编码的默认密钥。
+    if not os.environ.get("JWT_SECRET"):
+        print("[INFO] JWT_SECRET 未设置，将使用 config.yaml 或自动生成的持久化密钥")
 
     print("=" * 50)
     print("  网文 GraphRAG 分析系统")

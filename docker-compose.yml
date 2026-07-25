@@ -21,7 +21,7 @@ services:
         condition: service_started
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/"]
+      test: ["CMD", "python", "-c", "import urllib.request;urllib.request.urlopen('http://localhost:8000/health')"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -78,23 +78,6 @@ services:
       interval: 30s
       timeout: 5s
       retries: 3
-
-  # ===== 异步任务执行器 =====
-  celery_worker:
-    build: .
-    container_name: novel-graphrag-celery
-    command: celery -A core.tasks worker --loglevel=info
-    env_file:
-      - .env
-    volumes:
-      - ./data:/app/data
-      - ./config.yaml:/app/config.yaml
-    depends_on:
-      - redis
-      - app
-    restart: unless-stopped
-    deploy:
-      replicas: 2  # 并行编译，可用多个 Worker
 
   # ===== 反向代理 =====
   nginx:

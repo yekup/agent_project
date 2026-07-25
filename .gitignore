@@ -38,6 +38,7 @@ novel_project/data/chroma/
 
 # User data (auto-created)
 novel_project/data/users.json
+novel_project/data/.jwt_secret
 
 # Test files
 novel_project/data/raw/test_upload*
