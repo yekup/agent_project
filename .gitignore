@@ -22,9 +22,15 @@ novel_project/data/raw/*.txt
 novel_project/data/processed/*.txt
 novel_project/data/processed/*_clean.txt
 novel_project/data/processed/*.json
-novel_project/data/wiki/*.json
+novel_project/data/wiki/
 novel_project/data/memory/*.json
+novel_project/data/memory/sessions/
 novel_project/data/checkpoints/
+novel_project/data/cache/
+novel_project/data/index/
+novel_project/data/portraits/
+novel_project/data/logs/
+novel_project/data/*.db*
 
 # Logs
 *.log
