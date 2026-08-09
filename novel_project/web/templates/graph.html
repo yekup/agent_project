@@ -5,7 +5,7 @@
 <title>关系图谱 - NovelGraph</title>
 <script src="https://cdn.tailwindcss.com"></script>
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/font-awesome@4.7.0/css/font-awesome.min.css">
-<script src="/static/js/auth.js"></script>
+<script src="/static/js/auth.js?v=2"></script>
 <script src="/static/js/cytoscape.min.js"></script>
 <script>
 tailwind.config={theme:{extend:{colors:{tech:{main:'#22d3ee',dark:'#0891b2',bg:'#0c1222',card:'rgba(255,255,255,0.05)',border:'rgba(34,211,238,0.2)',text:'#e2e8f0'}},boxShadow:{glow:'0 0 18px rgba(34,211,238,0.15)'}}}}
@@ -126,11 +126,15 @@ const eColor={hostile:'#ef4444',friendly:'#60a5fa',subordinate:'#6b7280',other:'
 const nFill={'主角':'#f59e0b','配角':'#3b82f6'};
 function calcDeg(e){const d={};e.forEach(r=>{d[r.source]=(d[r.source]||0)+1;d[r.target]=(d[r.target]||0)+1;});return d;}
 
+document.addEventListener('DOMContentLoaded', async () => {
+// 等 AUTH.init() 从 localStorage 恢复 token 后再发请求，避免裸 fetch 401
+await AUTH.init();
 AUTH.apiFetch('/api/novels').then(r=>r.json()).then(novels=>{
 const sel=document.getElementById('novelSelector');
 sel.innerHTML='<option value="">-- 选择书籍 --</option>';
 novels.forEach(n=>{sel.innerHTML+=`<option value="${n.name}">${n.display_name||n.name}</option>`;});
 if(novels.length>0){sel.value=novels[0].name;switchNovel();}
+});
 });
 
 function switchNovel(){const n=document.getElementById('novelSelector').value;if(!n)return;
@@ -237,8 +241,11 @@ function filterByRole(){const r=document.getElementById('roleFilter').value;clos
 
 let _editMode = false;
 
+document.addEventListener('DOMContentLoaded', async () => {
+await AUTH.init();
 AUTH.apiFetch("/api/graph/edit/check")
   .then(r=>r.json()).then(d=>{ if(d.editable) document.getElementById("editToggle").classList.remove("hidden"); }).catch(()=>{});
+});
 
 function toggleEditMode() {
   _editMode = !_editMode;

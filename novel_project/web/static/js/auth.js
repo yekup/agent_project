@@ -112,7 +112,10 @@ const AUTH = {
    */
   async apiFetch(url, options = {}) {
     const headers = { ...(options.headers || {}) }
-    if (this.token) headers['Authorization'] = 'Bearer ' + this.token
+    // init() 在 DOMContentLoaded 才执行，页面内联脚本可能更早调用 apiFetch，
+    // 此时 this.token 尚未从 localStorage 恢复，需回退读取 localStorage
+    const token = this.token || localStorage.getItem('token')
+    if (token) headers['Authorization'] = 'Bearer ' + token
     const resp = await fetch(url, { ...options, headers })
     if (resp.status === 401) {
       this.clear()

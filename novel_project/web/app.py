@@ -57,7 +57,9 @@ env = Environment(loader=FileSystemLoader(template_dir), autoescape=True)
 
 def render_template(name: str, **kwargs):
     template = env.get_template(name)
-    return HTMLResponse(template.render(**kwargs))
+    # no-cache：页面 HTML 每次重新请求，避免浏览器长期缓存旧页面
+    # （旧页面内联脚本不带 token 调 /api，会被权限中间件 401 踢回登录页）
+    return HTMLResponse(template.render(**kwargs), headers={"Cache-Control": "no-cache"})
 
 # ── 配置加载 ─────────────────────────────────────────────────────────
 def load_config():
