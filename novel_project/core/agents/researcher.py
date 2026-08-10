@@ -23,6 +23,9 @@ class Researcher:
         # 对话 Wiki 优先路由: 描述含「讨论/之前/上次」等关键词
         if any(kw in desc_lower for kw in ["讨论", "之前", "上次", "历史", "对话"]):
             return self._search_dialogue(query)
+        # 社群路由: 描述含「社群/社区/群体/派系/阵营」
+        elif any(kw in desc_lower for kw in ["社区", "社群", "群体", "派系", "阵营"]):
+            return self._search_communities(query)
         elif any(kw in desc_lower for kw in ["向量", "语义", "全文"]):
             return self._search_vector(query)
         elif any(kw in desc_lower for kw in ["wiki", "章节", "摘要"]):
@@ -35,6 +38,37 @@ class Researcher:
             return self._search_all(query)
 
     # ── 工具 ────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _extract_entities_llm(query: str) -> list[str]:
+        """
+        LLM 实体抽取（LightRAG 式，含别名归一化）。
+
+        把「岳王爷」「赵官家」这类别称/尊称/官职归一化为图谱中的通行名，
+        解决子串匹配对别名零命中的问题。LLM 不可用或返回异常时返回空列表。
+        """
+        try:
+            from core.llm import call_llm
+            prompt = (
+                "从下面的问题中提取涉及的小说人物、势力、地点等实体名称。\n"
+                "要求：\n"
+                "- 别称/尊称/官职归一化为最通行的人物名（如「岳王爷」→「岳飞」）\n"
+                "- 只返回 JSON 数组，不要其他文字\n"
+                "- 没有实体则返回 []\n\n"
+                f"问题：{query}"
+            )
+            response = call_llm([{"role": "user", "content": prompt}])
+            if not response:
+                return []
+            start = response.find("[")
+            if start < 0:
+                return []
+            obj, _ = json.JSONDecoder().raw_decode(response[start:])
+            if isinstance(obj, list):
+                return [str(e) for e in obj if e][:5]
+        except Exception:
+            pass
+        return []
 
     @staticmethod
     def _extract_entities(query: str) -> list[str]:
@@ -185,16 +219,46 @@ class Researcher:
     # ── 图谱检索 ───────────────────────────────────────────────────
 
     def _search_graph(self, query: str, description: str) -> str:
-        """检索知识图谱"""
+        """检索知识图谱（直接命中 + 别名兜底 + PPR 多跳扩展）"""
         result = self.retriever.search_by_graph(query)
+        ppr_query = query
+
+        # 别名兜底：直接子串零命中时，用 LLM 实体抽取归一化后重试
+        # （如「岳王爷」→「岳飞」），并同步作为 PPR 的种子来源
+        if not result["matched_nodes"]:
+            entities = self._extract_entities_llm(query)
+            if entities:
+                alt_query = " ".join(entities)
+                alt = self.retriever.search_by_graph(alt_query)
+                if alt["matched_nodes"]:
+                    result = alt
+                    ppr_query = alt_query
+
+        # PPR 多跳扩展：发现查询未点名但结构上与种子紧密关联的人物
+        ppr_text = ""
+        try:
+            ppr = self.retriever.search_by_ppr(ppr_query, top_k=10)
+            extra = [p for p in ppr["ppr_nodes"] if not p["is_seed"]]
+            if extra:
+                lines = ["【多跳关联人物（PPR 图扩散）】"]
+                lines.append("关联人物：" + "、".join(p["name"] for p in extra[:8]))
+                for r in ppr["relations"][:10]:
+                    lines.append(f"  {r['source']} --[{r['relation']}]--> {r['target']}")
+                ppr_text = "\n".join(lines)
+        except Exception:
+            pass
+
         if not result["matched_nodes"] and not result["relations"]:
-            return "知识图谱中未找到相关信息。"
+            return ppr_text or "知识图谱中未找到相关信息。"
 
         lines = ["【知识图谱检索结果】"]
         if result["matched_nodes"]:
             lines.append(f"匹配人物：{'、'.join(result['matched_nodes'])}")
         for r in result["relations"][:15]:
             lines.append(f"  {r['source']} --[{r['relation']}]--> {r['target']}")
+        if ppr_text:
+            lines.append("")
+            lines.append(ppr_text)
         return "\n".join(lines)
 
     # ── 原文检索 ───────────────────────────────────────────────────
@@ -235,6 +299,24 @@ class Researcher:
 
     # ── 全量搜索 ───────────────────────────────────────────────────
 
+    def _search_communities(self, query: str) -> str:
+        """检索人物社群"""
+        try:
+            results = self.retriever.search_communities(query, top_k=3)
+        except Exception:
+            return ""
+        if not results:
+            return ""
+        lines = ["【人物社群检索】"]
+        for r in results:
+            lines.append(f"  {r.get('label', '')}（{r.get('member_count', 0)}人）")
+            lines.append(f"  摘要：{r.get('summary', '')[:200]}")
+            chars = r.get("top_characters", [])
+            if chars:
+                lines.append(f"  核心人物：{'、'.join(chars[:6])}")
+            lines.append("")
+        return "\n".join(lines)
+
     def _search_dialogue(self, query: str) -> str:
         """检索对话 Wiki（讨论结论层）"""
         try:
@@ -259,29 +341,26 @@ class Researcher:
         return "\n".join(lines)
 
     def _search_all(self, query: str) -> str:
-        """全量搜索：Wiki + 向量 + 图谱 + 对话 Wiki"""
-        parts = []
+        """全量搜索：Wiki + 图谱（含 PPR 多跳）+ 向量 + 社群 + 对话 Wiki。
 
-        # Wiki
-        wiki_text = self._search_wiki(query, "")
+        注意：图谱部分直接复用 _search_graph（含别名兜底和 PPR 扩展），
+        不再内联简化版——历史上内联版缺少 PPR，导致"全量搜索不如图谱搜索"。
+        """
+        parts = [
+            self._search_wiki(query, ""),
+            self._search_graph(query, ""),
+            self._search_vector(query),
+        ]
 
-        # 图谱
-        graph_result = self.retriever.search_by_graph(query)
-        graph_text = ""
-        if graph_result.get("matched_nodes"):
-            graph_text = f"【知识图谱】\n匹配人物：{'、'.join(graph_result['matched_nodes'][:5])}"
-            if graph_result["relations"]:
-                graph_text += "\n关系："
-                for r in graph_result["relations"][:10]:
-                    graph_text += f"\n  {r['source']} --[{r['relation']}]--> {r['target']}"
-
-        parts.append(wiki_text)
-        if graph_text:
-            parts.append(graph_text)
+        # 社群（标注来源）
+        community_text = self._search_communities(query)
+        if community_text:
+            parts.append(community_text)
 
         # 对话 Wiki（标注来源，供 Writer 区分事实与讨论结论）
         dialogue_text = self._search_dialogue(query)
         if dialogue_text:
             parts.append(dialogue_text)
 
-        return "\n\n".join(parts)
+        # 滤掉空串和各腿的"未找到"占位文案
+        return "\n\n".join(p for p in parts if p and "未找到" not in p)

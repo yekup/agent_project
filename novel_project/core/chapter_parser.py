@@ -627,6 +627,13 @@ class CheckpointManager:
         indices.add(chapter_index)
         self._save(phase, indices, stats)
 
+    def unmark(self, chapter_index: int, phase: str = "wiki"):
+        """使单个断点失效（增量编译时末卷内容增长，需作废旧卷摘要）"""
+        indices = self._load(phase)
+        if chapter_index in indices:
+            indices.discard(chapter_index)
+            self._save(phase, indices)
+
     def get_completed(self, phase: str = "wiki") -> set[int]:
         return self._load(phase)
 

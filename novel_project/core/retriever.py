@@ -49,19 +49,32 @@ class NovelRetriever:
         # 第三级：向量检索（初始化 ChromaDB 索引器）
         self._vector_indexer = None
         try:
-            from core.chunker import VectorStoreIndexer
+            from core.chunker import VectorStoreIndexer, NOVEL_KEY_TO_SHORT
             self._vector_indexer = VectorStoreIndexer()
+            # 向量库 metadata 的 novel_key 用短名（shaosong/doupo/...），
+            # 与 self._novel_key（wiki 全名）做一次映射
+            self._vector_key = NOVEL_KEY_TO_SHORT.get(self._novel_key, self._novel_key)
         except Exception:
-            pass
+            self._vector_key = self._novel_key
 
         # 原文索引(用于根据章节取原文)
         with open(novel_path,"r",encoding="utf-8") as f:
             novel_data = json.load(f)
         self.chapters = novel_data["chapters"]
 
+        # 社区数据（从图谱 JSON 加载，可能不存在）
+        self._community_data: dict | None = None
+        try:
+            from core.graph_community import load_community_data
+            self._community_data = load_community_data(graph_path) or {}
+        except Exception:
+            pass
+
         logger.info(f"三级检索器初始化完成：")
         logger.info(f"  Wiki: {len(self.wiki)} 章" + (f" + {len(self.volumes)} 卷 + 全书摘要" if self._has_hierarchy else ""))
         logger.info(f"  图谱: {self.graph.number_of_nodes()} 人物, {self.graph.number_of_edges()} 关系")
+        if self._community_data:
+            logger.info(f"  社区: {self._community_data.get('total_communities', 0)} 个")
         logger.info(f"  原文: {len(self.chapters)} 章")
 
     def _dynamic_top_k(self, query, default=5):
@@ -231,17 +244,123 @@ class NovelRetriever:
             "matched_nodes": list(related_nodes),
             "relations": relations,
         }
-    
+
+    def search_by_ppr(self, query, top_k=10, alpha=0.85):
+        """
+        第 2.5 级：PPR 多跳图检索（HippoRAG 式）
+
+        从查询中命中的实体节点出发，在人物关系图上做个性化 PageRank，
+        把与查询实体"走得近"的人物按结构重要性排序——能发现查询中
+        没有直接点名、但通过多跳关系紧密关联的人物（桥接人物）。
+
+        参数:
+            query: 用户问题
+            top_k: 返回的人物数（含种子节点）
+            alpha: 重启概率（越大越贴近种子，HippoRAG 常用 0.5~0.85）
+
+        返回:
+            {"seed_nodes": [...], "ppr_nodes": [{name, score, is_seed}], "relations": [...]}
+            无种子命中时 ppr_nodes 为空。
+        """
+        import networkx as nx
+
+        # 1. 种子节点：与 search_by_graph 相同的实体命中逻辑
+        query_lower = query.lower()
+        seeds = []
+        for node in self.graph.nodes:
+            node_clean = node.split("（")[0].split("(")[0].lower()
+            if node_clean and node_clean in query_lower:
+                seeds.append(node)
+            elif node.lower() in query_lower:
+                seeds.append(node)
+        if not seeds:
+            return {"seed_nodes": [], "ppr_nodes": [], "relations": []}
+
+        # 2. 个性化 PageRank（边权重非法时退化为无权图）
+        personalization = {n: 1.0 / len(seeds) for n in seeds}
+        scores = None
+        for kwargs in ({"weight": "weight"}, {}):
+            try:
+                scores = nx.pagerank(self.graph, alpha=alpha,
+                                     personalization=personalization, **kwargs)
+                break
+            except Exception as e:
+                logger.debug(f"PPR 计算失败（{kwargs}）: {e}")
+        if scores is None:
+            return {"seed_nodes": seeds, "ppr_nodes": [], "relations": []}
+
+        # 3. 按 PPR 分数排序取 top_k
+        seed_set = set(seeds)
+        ranked = sorted(scores.items(), key=lambda kv: -kv[1])
+        ppr_nodes = [
+            {"name": name, "score": round(score, 6), "is_seed": name in seed_set}
+            for name, score in ranked[:top_k]
+        ]
+        top_names = {p["name"] for p in ppr_nodes}
+
+        # 4. top 节点之间的关系（含与种子的边，用于解释多跳路径）
+        relations = []
+        for u, v, data in self.graph.edges(data=True):
+            if u in top_names and v in top_names:
+                relations.append({
+                    "source": u,
+                    "target": v,
+                    "relation": data.get("relation", ""),
+                    "weight": data.get("weight", 1),
+                })
+        relations.sort(key=lambda r: -(r["weight"] if isinstance(r["weight"], (int, float)) else 1))
+
+        return {
+            "seed_nodes": seeds,
+            "ppr_nodes": ppr_nodes,
+            "relations": relations[:15],
+        }
+
     def search_by_vector(self, query, top_k=20):
         """
-        第 3 级：向量检索原文。
-        通过 ChromaDB 对分块后的原文进行语义搜索。
+        第 3 级：向量检索原文（混合检索）。
+
+        两条腿：
+        1. 纯向量语义检索（默认 ONNX 嵌入对中文较弱，单靠它召回率低）
+        2. 实体精确腿：查询中命中图谱节点的实体名，用 where_document
+           限定分块必须包含实体名，再按向量分排序——保证实体必现
+
+        两腿结果按 RRF（Reciprocal Rank Fusion）融合排序。
         """
         if self._vector_indexer is None:
             return [{"text": "向量库未就绪", "metadata": {}, "score": 0}]
 
         try:
-            results = self._vector_indexer.search(query, top_k=top_k)
+            # 第 1 腿：纯向量（限定本书，避免多书索引后跨书串扰）
+            legs = [self._vector_indexer.search(query, top_k=top_k, novel_key=self._vector_key) or []]
+
+            # 第 2 腿：实体精确（图谱节点名出现在查询中 → 限定包含）
+            graph = getattr(self, "graph", None)
+            if graph is not None:
+                entities = []
+                for node in graph.nodes:
+                    clean = node.split("（")[0].split("(")[0]
+                    if clean and len(clean) >= 2 and clean in query and clean not in entities:
+                        entities.append(clean)
+                for e in entities[:3]:
+                    hits = self._vector_indexer.search(query, top_k=5, novel_key=self._vector_key, contains=e) or []
+                    legs.append(hits)
+
+            # RRF 融合（保留每条命中原有的 text/metadata/score 字段；
+            # 实体腿权重 ×2：实体必现的 chunks 对实体类问题更可靠）
+            fused: dict[str, float] = {}
+            by_id: dict[str, dict] = {}
+            for leg_idx, leg in enumerate(legs):
+                leg_weight = 1.0 if leg_idx == 0 else 2.0
+                for rank, hit in enumerate(leg):
+                    cid = hit.get("chunk_id") or hit.get("text", "")[:50]
+                    if not cid or "未就绪" in str(hit.get("text", "")):
+                        continue
+                    fused[cid] = fused.get(cid, 0.0) + leg_weight / (60 + rank + 1)
+                    if cid not in by_id:
+                        by_id[cid] = hit
+            ordered = sorted(fused.items(), key=lambda kv: -kv[1])
+            results = [by_id[cid] for cid, _ in ordered[:top_k]]
             return results if results else [{"text": "无匹配结果", "metadata": {}, "score": 0}]
         except Exception as e:
             return [{"text": f"向量检索异常: {e}", "metadata": {}, "score": 0}]
@@ -304,6 +423,54 @@ class NovelRetriever:
 
         return result
 
+    def search_communities(self, query, top_k=3):
+        """
+        社区级检索：在人物社群摘要中匹配关键词。
+
+        打分: 实体命中 ×5 + ngram_hits(query, label + summary)
+        社群数据不存在（未编译社区）时返回空列表。
+        """
+        if not self._community_data:
+            return []
+
+        summaries = self._community_data.get("summaries", [])
+        node_map = self._community_data.get("node_to_community", {})
+        if not summaries:
+            return []
+
+        scored = []
+        for s in summaries:
+            score = 0
+            # 实体命中
+            for name in s.get("characters", []):
+                if name and name in query:
+                    score += 5
+            # n-gram 匹配 label + summary
+            combined = (s.get("label", "") + " " + s.get("summary", ""))
+            try:
+                score += ngram_hits(query, combined)
+            except Exception:
+                pass
+
+            if score > 0:
+                scored.append((score, s))
+
+        scored.sort(key=lambda x: -x[0])
+        result = []
+        for _, s in scored[:top_k]:
+            chars = s.get("characters", [])
+            result.append({
+                "source_type": "community",
+                "community_id": s.get("community_id", 0),
+                "label": s.get("label", ""),
+                "summary": s.get("summary", ""),
+                "member_count": s.get("member_count", 0),
+                "top_characters": chars[:8],
+                "text": f"【人物社群】{s.get('label', '')}（{len(chars)}人）：{s.get('summary', '')}",
+            })
+
+        return result
+
     def search(self, query, top_k=3):
         """
         检索：Wiki → 图谱 → 向量 → 对话 Wiki
@@ -313,7 +480,9 @@ class NovelRetriever:
             "query": query,
             "wiki_results": [],
             "graph_results": {"matched_nodes": [], "relations": []},
+            "ppr_results": {"seed_nodes": [], "ppr_nodes": [], "relations": []},
             "vector_results": [],
+            "community_results": [],
             "dialogue_results": [],
             "summary": "",
         }
@@ -326,11 +495,19 @@ class NovelRetriever:
         graph_results = self.search_by_graph(query)
         result["graph_results"] = graph_results
 
+        # 第 2.5 级：PPR 多跳检索（仅在图谱有种子命中时有产出）
+        ppr_results = self.search_by_ppr(query, top_k=10)
+        result["ppr_results"] = ppr_results
+
         # 第 3 级：向量检索
         vector_results = self.search_by_vector(query, top_k=top_k)
         result["vector_results"] = vector_results
 
-        # 第 4 级：对话 Wiki 检索
+        # 第 4 级：社群检索
+        community_results = self.search_communities(query, top_k=top_k)
+        result["community_results"] = community_results
+
+        # 第 5 级：对话 Wiki 检索
         dialogue_results = self.search_dialogue_wiki(query, top_k=top_k)
         result["dialogue_results"] = dialogue_results
 
@@ -339,9 +516,15 @@ class NovelRetriever:
         if wiki_results:
             chapters = [w.get("chapter_title") or w.get("title", "") for w in wiki_results]
             summary_parts.append(f"相关章节：{'、'.join(chapters)}")
+        if community_results:
+            labels = [c.get("label", "") for c in community_results]
+            summary_parts.append(f"相关社群：{'、'.join(labels)}")
         if graph_results["matched_nodes"]:
             nodes = graph_results["matched_nodes"]
             summary_parts.append(f"相关人物：{'、'.join(nodes)}")
+        ppr_extra = [p["name"] for p in ppr_results["ppr_nodes"] if not p["is_seed"]]
+        if ppr_extra:
+            summary_parts.append(f"多跳关联人物：{'、'.join(ppr_extra[:5])}")
         if vector_results and vector_results[0].get("text") and "未就绪" not in vector_results[0]["text"]:
             summary_parts.append(f"向量匹配段落：{len(vector_results)} 条")
         if dialogue_results:

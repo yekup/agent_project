@@ -27,6 +27,7 @@ from __future__ import annotations
 import json
 import logging
 import math
+import os
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -480,6 +481,20 @@ class NovelChunker:
 # 向量库集成
 # ═════════════════════════════════════════════════════════════════════
 
+# 向量库 metadata 的 novel_key 使用短名（历史数据如此），
+# 而代码内各处通行的是 wiki 文件全名，这里做双向映射。
+NOVEL_KEY_TO_SHORT = {
+    "绍宋作者：榴弹怕水": "shaosong",
+    "斗破苍穹作者：天蚕土豆": "doupo",
+    "神印王座作者：唐家三少": "shenyin",
+}
+NOVEL_SHORT_TO_FULLNAME = {  # 短名 → data/processed/ 下的 JSON 文件名
+    "shaosong": "《绍宋》作者：榴弹怕水",
+    "doupo": "《斗破苍穹》作者：天蚕土豆",
+    "shenyin": "《神印王座》作者：唐家三少",
+}
+
+
 class VectorStoreIndexer:
     """
     将分块结果写入向量数据库（ChromaDB）。
@@ -495,6 +510,43 @@ class VectorStoreIndexer:
         self._collection = None
         self._embedding_fn = None
 
+    @staticmethod
+    def _pick_embedding():
+        """
+        选择嵌入函数。
+
+        由环境变量 NOVEL_EMBEDDING 控制：
+        - "bge": BGE 中文模型（sentence-transformers，需先重建索引到
+          novel_chunks_bge collection，见 scripts/vector_recall_eval.py）
+        - 其他/未设置（默认）: ChromaDB 默认 ONNX（all-MiniLM-L6-v2），
+          使用旧 novel_chunks collection，开箱即用
+
+        bge 模式初始化失败（依赖缺失/模型未下载）时回退默认 ONNX。
+
+        返回: (embedding_fn 或 None, 模型名, collection 后缀)
+        """
+        if os.environ.get("NOVEL_EMBEDDING", "").lower() != "bge":
+            return None, "default-onnx", ""
+        try:
+            from chromadb.utils.embedding_functions import (
+                SentenceTransformerEmbeddingFunction,
+            )
+            # 有 CUDA 用 GPU（1650Ti 4G 跑 bge-large 足够），否则 CPU
+            try:
+                import torch
+                device = "cuda" if torch.cuda.is_available() else "cpu"
+            except ImportError:
+                device = "cpu"
+            fn = SentenceTransformerEmbeddingFunction(
+                model_name="BAAI/bge-large-zh-v1.5", device=device,
+            )
+            fn(["预热"])  # 触发一次真实编码，失败则走回退
+            logger.info(f"[VectorStoreIndexer] 使用 BGE 中文嵌入: bge-large-zh-v1.5 ({device})")
+            return fn, "bge-large-zh-v1.5", "_bge"
+        except Exception as e:
+            logger.warning(f"[VectorStoreIndexer] BGE 中文嵌入不可用（{e}），回退默认 ONNX 嵌入")
+            return None, "default-onnx", ""
+
     def _init_db(self):
         """延迟初始化 ChromaDB"""
         if self._collection is not None:
@@ -505,10 +557,13 @@ class VectorStoreIndexer:
             client = chromadb.PersistentClient(
                 path=str(Path(__file__).resolve().parent.parent / "data" / "chroma")
             )
-            # 使用 ChromaDB 默认嵌入（基于 ONNX，无需 PyTorch/sentence-transformers）
+            # 嵌入维度随模型不同（BGE 1024 / 默认 ONNX 384），
+            # 不同模型必须分 collection 存储，不能混写
+            self._embedding_fn, emb_name, suffix = self._pick_embedding()
             self._collection = client.get_or_create_collection(
-                name=self.collection_name,
-                metadata={"hnsw:space": "cosine"},
+                name=f"{self.collection_name}{suffix}",
+                embedding_function=self._embedding_fn,
+                metadata={"hnsw:space": "cosine", "embedding_model": emb_name},
             )
         except ImportError:
             logger.warning("chromadb 未安装，向量索引不可用")
@@ -557,6 +612,7 @@ class VectorStoreIndexer:
         query: str,
         top_k: int = 20,
         novel_key: str | None = None,
+        contains: str | None = None,
     ) -> list[dict]:
         """
         语义搜索分块。
@@ -565,23 +621,35 @@ class VectorStoreIndexer:
             query: 搜索文本
             top_k: 返回条数
             novel_key: 限定小说（可选）
+            contains: 限定分块文本必须包含该子串（可选，实体精确腿用）
         """
         self._init_db()
         if self._collection is None:
             return [{"text": "向量库未就绪", "metadata": {}}]
 
         where = {"novel_key": novel_key} if novel_key else None
+        where_document = {"$contains": contains} if contains else None
         results = self._collection.query(
             query_texts=[query],
             n_results=top_k,
             where=where,
+            where_document=where_document,
         )
 
         hits = []
         for i in range(len(results["ids"][0])):
+            doc = results["documents"][0][i]
+            if contains and contains in doc:
+                # 实体腿：截取窗口以实体首次出现处为中心，
+                # 避免 [:500] 截断导致返回文本里看不到目标实体
+                pos = doc.find(contains)
+                start = max(0, pos - 200)
+                doc = doc[start:start + 500]
+            else:
+                doc = doc[:500]
             hits.append({
                 "chunk_id": results["ids"][0][i],
-                "text": results["documents"][0][i][:500],
+                "text": doc,
                 "score": results["distances"][0][i] if results["distances"] else 0,
                 "metadata": results["metadatas"][0][i] if results["metadatas"] else {},
             })

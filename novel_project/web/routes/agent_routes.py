@@ -16,9 +16,34 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 memory = SessionMemory()
 
-WIKI_PATH = os.path.join(BASE_DIR, "data/wiki/绍宋作者：榴弹怕水_hierarchical.json")
-GRAPH_PATH = os.path.join(BASE_DIR, "data/wiki/绍宋作者：榴弹怕水_graph.json")
-NOVEL_PATH = os.path.join(BASE_DIR, "data/processed/《绍宋》作者：榴弹怕水.json")
+DEFAULT_NOVEL = "绍宋作者：榴弹怕水"  # 请求未指定书籍时的默认书（向后兼容）
+
+
+def _wiki_path(novel: str) -> str:
+    return os.path.join(BASE_DIR, "data", "wiki", f"{novel}_hierarchical.json")
+
+
+def _graph_path(novel: str) -> str:
+    return os.path.join(BASE_DIR, "data", "wiki", f"{novel}_graph.json")
+
+
+def _novel_json_path(novel: str) -> str:
+    """由 wiki 名解析原文 JSON 路径（《书名》作者：xx.json；glob 兜底）"""
+    import glob
+    core = novel.split("作者：")[0].strip().strip("《》")
+    base = os.path.join(BASE_DIR, "data", "processed")
+    for p in sorted(glob.glob(os.path.join(base, f"*{core}*.json"))):
+        if not p.endswith("_chunks.json"):
+            return p
+    # 找不到时返回约定路径（调用方负责检查存在性）
+    return os.path.join(base, f"{novel}.json")
+
+
+def _resolve_novel(novel: str = "") -> str:
+    """解析请求的书籍参数：空 → 默认书；非空 → 路径安全校验后返回"""
+    if not novel:
+        return DEFAULT_NOVEL
+    return _safe_name(novel)
 
 
 def _safe_name(name: str, kind: str = "书籍名") -> str:
@@ -29,54 +54,57 @@ def _safe_name(name: str, kind: str = "书籍名") -> str:
         raise HTTPException(status_code=400, detail=str(e))
 
 
-def _ensure_graph():
-    if os.path.exists(GRAPH_PATH):
+def _ensure_graph(novel: str = DEFAULT_NOVEL):
+    graph_path = _graph_path(novel)
+    if os.path.exists(graph_path):
         return
     from core.knowledge_graph import merge_characters, merge_relationships, build_graph, save_graph
     from core.chapter_parser import load_wiki
-    data = load_wiki(WIKI_PATH)
+    data = load_wiki(_wiki_path(novel))
     chapters = data["chapters"] if isinstance(data, dict) else data
     char_map = merge_characters(chapters)
     rels = merge_relationships(chapters)
     G = build_graph(char_map, rels)
-    save_graph(G, GRAPH_PATH)
+    save_graph(G, graph_path)
 
 
-# ── NovelRetriever 进程级惰性单例 ─────────────────────────────────────
+# ── NovelRetriever 进程级缓存（按书） ─────────────────────────────────
 # 构造函数会同步加载整个 wiki + 整本小说原文并重建 NetworkX 图（数百 MB IO），
 # 不能每个请求重建；首次调用前仍需 _ensure_graph() 生成图谱文件。
-_retriever = None
+_retrievers: dict = {}
 _retriever_lock = threading.Lock()
 
 
-def _get_retriever():
-    """获取进程级 NovelRetriever 单例（双重检查锁，惰性初始化）"""
-    global _retriever
-    if _retriever is None:
-        with _retriever_lock:
-            if _retriever is None:
-                from core.retriever import NovelRetriever
-                _ensure_graph()
-                _retriever = NovelRetriever(WIKI_PATH, GRAPH_PATH, NOVEL_PATH)
-    return _retriever
+def _get_retriever(novel: str = DEFAULT_NOVEL):
+    """获取指定书籍的 NovelRetriever（进程级缓存，每书一个实例）"""
+    with _retriever_lock:
+        r = _retrievers.get(novel)
+        if r is None:
+            from core.retriever import NovelRetriever
+            _ensure_graph(novel)
+            r = NovelRetriever(_wiki_path(novel), _graph_path(novel), _novel_json_path(novel))
+            _retrievers[novel] = r
+        return r
 
 
 class QueryRequest(BaseModel):
     query: str
     top_k: int = 5
+    novel: str = ""  # 空 → 默认书
 
 
 class AgentQueryRequest(BaseModel):
     query: str
     session_id: str = ""
+    novel: str = ""  # 空 → 默认书
 
 
 @router.post("/search")
 async def search(body: QueryRequest):
-    if not os.path.exists(WIKI_PATH):
+    novel = _resolve_novel(body.novel)
+    if not os.path.exists(_wiki_path(novel)):
         return {"wiki_results": [], "graph_results": {}}
-    _ensure_graph()
-    retriever = await run_in_threadpool(_get_retriever)
+    retriever = await run_in_threadpool(_get_retriever, novel)
     wiki_results = await run_in_threadpool(retriever.search_wiki, body.query, top_k=body.top_k)
     graph_results = await run_in_threadpool(retriever.search_by_graph, body.query)
     return {"wiki_results": wiki_results, "graph_results": graph_results}
@@ -85,10 +113,10 @@ async def search(body: QueryRequest):
 @router.post("/search/vector")
 async def vector_search(body: QueryRequest):
     """语义向量搜索（Level 3 检索）"""
-    if not os.path.exists(WIKI_PATH):
+    novel = _resolve_novel(body.novel)
+    if not os.path.exists(_wiki_path(novel)):
         return {"vector_results": []}
-    _ensure_graph()
-    retriever = await run_in_threadpool(_get_retriever)
+    retriever = await run_in_threadpool(_get_retriever, novel)
     results = await run_in_threadpool(retriever.search_by_vector, body.query, top_k=body.top_k)
     return {"vector_results": results}
 
@@ -96,10 +124,10 @@ async def vector_search(body: QueryRequest):
 @router.post("/search/all")
 async def search_all(body: QueryRequest):
     """三级统一检索"""
-    if not os.path.exists(WIKI_PATH):
+    novel = _resolve_novel(body.novel)
+    if not os.path.exists(_wiki_path(novel)):
         return {"wiki_results": [], "graph_results": {}, "vector_results": []}
-    _ensure_graph()
-    retriever = await run_in_threadpool(_get_retriever)
+    retriever = await run_in_threadpool(_get_retriever, novel)
     return await run_in_threadpool(retriever.search, body.query, top_k=body.top_k)
 
 
@@ -136,15 +164,14 @@ async def ask_agent(body: AgentQueryRequest, background_tasks: BackgroundTasks =
     from core.agents.reviewer import Reviewer
     from core.agents.coordinator import Coordinator
     from core.memory import extract_entities_from_graph
-    if not os.path.exists(WIKI_PATH):
+    novel = _resolve_novel(body.novel)
+    if not os.path.exists(_wiki_path(novel)):
         return {"report": "数据未就绪"}
-    _ensure_graph()
 
-    novel = "绍宋作者：榴弹怕水"  # 当前固定；多书支持后可参数化
-
-    # 语义缓存查詢
+    # 语义缓存查詢（key 带书籍前缀，避免跨书串答）
     cache = get_semantic_cache()
-    cached_report = cache.get(body.query)
+    cache_key = f"[{novel}] {body.query}"
+    cached_report = cache.get(cache_key)
     if cached_report is not None:
         logger.info(f"  [SemanticCache] ✅ 缓存命中: {body.query[:30]}...")
         session_id = body.session_id or memory.new_session(body.query, novel=novel)
@@ -168,7 +195,7 @@ async def ask_agent(body: AgentQueryRequest, background_tasks: BackgroundTasks =
     augmented_query = body.query
     if related_context:
         augmented_query = f"{body.query}\n\n【相关历史】\n{related_context}"
-    retriever = await run_in_threadpool(_get_retriever)
+    retriever = await run_in_threadpool(_get_retriever, novel)
     researcher = Researcher(retriever)
     writer = Writer()
     reviewer = Reviewer()
@@ -202,9 +229,9 @@ async def ask_agent(body: AgentQueryRequest, background_tasks: BackgroundTasks =
 
         background_tasks.add_task(_compile_in_background, session_id, novel, memory, result)
 
-    # 写入语义缓存
+    # 写入语义缓存（key 带书籍前缀，与查询时一致）
     if report:
-        cache.put(body.query, report)
+        cache.put(cache_key, report)
     return {
         "report": report,
         "rounds": result.get("rounds", 0),
@@ -222,11 +249,11 @@ async def ask_agent_stream(body: AgentQueryRequest):
     from core.agents.coordinator import Coordinator
     from fastapi.responses import StreamingResponse
 
-    _ensure_graph()
+    novel = _resolve_novel(body.novel)
 
     async def event_stream():
         yield f"data: {json.dumps({'event': 'start', 'message': '开始分析...'})}\n\n"
-        retriever = await run_in_threadpool(_get_retriever)
+        retriever = await run_in_threadpool(_get_retriever, novel)
         researcher = Researcher(retriever)
         writer = Writer()
         reviewer = Reviewer()
@@ -241,7 +268,8 @@ async def ask_agent_stream(body: AgentQueryRequest):
         steps = await run_in_threadpool(coordinator.decompose_task, body.query, intent)
 
         yield f"data: {json.dumps({'event': 'progress', 'message': f'共 {len(steps)} 个检索步骤，执行中...'})}\n\n"
-        result = await run_in_threadpool(coordinator.run, body.query)
+        # 传入预算好的 intent/steps，coordinator 内部对应节点会跳过，避免重复 LLM 调用
+        result = await run_in_threadpool(coordinator.run, body.query, intent=intent, steps=steps)
 
         yield f"data: {json.dumps({'event': 'result', 'report': result.get('final_report', ''), 'rounds': result.get('rounds', 0), 'intent': result.get('intent', '')})}\n\n"
         yield "data: [DONE]\n\n"
@@ -261,7 +289,8 @@ async def ask_agent_auto(body: AgentQueryRequest):
     from core.agents.writer import Writer
     from core.agents.reviewer import Reviewer
 
-    retriever = await run_in_threadpool(_get_retriever)
+    novel = _resolve_novel(body.novel)
+    retriever = await run_in_threadpool(_get_retriever, novel)
     pool = MaterialPool(llm_compress=True, max_rounds=3)
 
     registry = ToolRegistry()
@@ -703,8 +732,8 @@ async def index_novel(data: dict, request: Request = None):
     _safe_name(novel)
     import glob
 
-    cn_map = {"shaosong": "《绍宋》作者：榴弹怕水"}
-    name = cn_map.get(novel, novel)
+    from core.chunker import NOVEL_SHORT_TO_FULLNAME
+    name = NOVEL_SHORT_TO_FULLNAME.get(novel, novel)
     filepath = f"data/processed/{name}.json"
 
     if not os.path.exists(filepath):
@@ -826,6 +855,8 @@ async def build_wiki_api(data: dict, background_tasks: BackgroundTasks, request:
     """
     开始编译（后台异步执行，前端轮询进度）
     {"filename": "xxx.txt", "chapters": 50} 或 {"filename": "xxx.txt", "chapters": -1}（全量）
+    增量编译（复用已完成章节的断点，只编译新增章节）:
+    {"filename": "xxx.txt", "chapters": -1, "incremental": true}
     """
     from core.chapter_parser import CheckpointManager
     import uuid
@@ -834,6 +865,7 @@ async def build_wiki_api(data: dict, background_tasks: BackgroundTasks, request:
     chapters = data.get("chapters", -1)
     start_chapter = data.get("start_chapter")
     end_chapter = data.get("end_chapter")
+    incremental = bool(data.get("incremental", False))
 
     if not filename:
         raise HTTPException(status_code=400, detail="参数缺失: filename")
@@ -843,11 +875,12 @@ async def build_wiki_api(data: dict, background_tasks: BackgroundTasks, request:
     novel_name = filename.replace(ext, "").replace("《", "").replace("》", "")
     _safe_name(novel_name)
 
-    # 清空旧断点（全量编译时）
-    cpm = CheckpointManager(novel_name)
-    cpm.reset("wiki")
-    cpm.reset("volume")
-    cpm.reset("book")
+    # 清空旧断点（仅全量编译；增量编译保留断点以复用已完成章节）
+    if not incremental:
+        cpm = CheckpointManager(novel_name)
+        cpm.reset("wiki")
+        cpm.reset("volume")
+        cpm.reset("book")
 
     # 保存总章节数到 meta 文件（让进度接口能读到）
     total_chapters = 0
@@ -862,13 +895,14 @@ async def build_wiki_api(data: dict, background_tasks: BackgroundTasks, request:
         json.dump({"novel": novel_name, "total_chapters": total_chapters}, f)
 
     # 后台任务
-    background_tasks.add_task(_run_build, filename, chapters, novel_name, start_chapter, end_chapter)
+    background_tasks.add_task(_run_build, filename, chapters, novel_name, start_chapter, end_chapter, incremental)
 
     return {
         "status": "started",
         "novel": novel_name,
         "total_chapters": total_chapters,
-        "message": f"编译已启动，共 {total_chapters} 章",
+        "incremental": incremental,
+        "message": f"{'增量' if incremental else '全量'}编译已启动，共 {total_chapters} 章",
     }
 
 
@@ -903,10 +937,13 @@ async def build_status(novel: str = ""):
     }
 
 
-def _run_build(filename: str, chapters: int, novel_name: str, start_chapter: int = None, end_chapter: int = None):
-    """后台执行编译（支持暂停）"""
+def _run_build(filename: str, chapters: int, novel_name: str, start_chapter: int = None, end_chapter: int = None, incremental: bool = False):
+    """后台执行编译（支持暂停；incremental=True 时复用断点只编译新增章节）"""
     import json, os, tempfile
-    from core.chapter_parser import build_wiki, build_volume_summaries, build_book_summary, save_hierarchical_wiki
+    from core.chapter_parser import (
+        CheckpointManager, build_wiki, build_volume_summaries,
+        build_book_summary, save_hierarchical_wiki,
+    )
 
     ext = os.path.splitext(filename)[1]
     processed_path = f"data/processed/{filename.replace(ext, '.json')}"
@@ -945,7 +982,19 @@ def _run_build(filename: str, chapters: int, novel_name: str, start_chapter: int
             novel, batch_size=5, delay=2,
             checkpoint_path=wiki_path, novel_key=novel_name,
             pause_check=_is_paused,
+            incremental=incremental,
         )
+
+        if incremental and wiki:
+            # 追加章节会使末卷内容增长：作废末卷摘要与全书摘要的断点，
+            # 其余已完成卷的摘要断点保留复用
+            from core.chapter_parser import _detect_natural_volumes
+            vol_groups = _detect_natural_volumes(wiki)
+            last_vol_start = vol_groups[-1][1] if vol_groups else ((len(wiki) - 1) // 50) * 50
+            cpm = CheckpointManager(novel_name)
+            cpm.unmark(last_vol_start, "volume")
+            cpm.reset("book")
+
         volumes = build_volume_summaries(wiki, volume_size=50, novel_key=novel_name)
         book = build_book_summary(wiki, volumes, novel_key=novel_name)
         hier_path = f"data/wiki/{novel_name}_hierarchical.json"
@@ -975,7 +1024,29 @@ def _run_build(filename: str, chapters: int, novel_name: str, start_chapter: int
         rels = merge_relationships(wiki)
         G = build_graph(char_map, rels)
         graph_path = f"data/wiki/{novel_name}_graph.json"
+
+        # 增量编译时先取出旧社区摘要（save_graph 会覆盖图谱文件），
+        # 成员集合未变的社区直接复用，跳过 LLM 调用
+        prev_summaries = None
+        if incremental:
+            try:
+                from core.graph_community import load_community_data
+                prev_summaries = (load_community_data(graph_path) or {}).get("summaries")
+            except Exception:
+                prev_summaries = None
+
         save_graph(G, graph_path)
+
+        # 社区检测 + 摘要（编译流程末尾）
+        try:
+            from core.graph_community import detect_communities, generate_community_summaries, save_community_data
+            communities = detect_communities(G)
+            community_summaries = generate_community_summaries(
+                G, communities, wiki, novel_name, cached_summaries=prev_summaries)
+            save_community_data(communities, community_summaries, graph_path)
+            logger.info("社区检测完成: %d 个社区", len(community_summaries))
+        except Exception:
+            logger.warning("社区检测跳过（非致命）")
 
     except Exception as e:
         logger.exception(f"编译失败: {e}")
@@ -1070,8 +1141,8 @@ async def retry_chapter(data: dict):
     _safe_name(novel)
 
     # 加载数据
-    cn_map = {"shaosong": "《绍宋》作者：榴弹怕水"}
-    name = cn_map.get(novel, novel)
+    from core.chunker import NOVEL_SHORT_TO_FULLNAME
+    name = NOVEL_SHORT_TO_FULLNAME.get(novel, novel)
     import glob
     processed_path = f"data/processed/{name}.json"
     if not os.path.exists(processed_path):

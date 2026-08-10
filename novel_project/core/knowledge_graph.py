@@ -194,7 +194,12 @@ def build_graph(char_map, relationships):
 
     # 添加边（关系）
     dropped = 0
+    self_loops = 0
     for r in relationships:
+        # 自环边（上游实体合并把不同人物并到同名节点）无检索价值，丢弃
+        if r["source"] == r["target"]:
+            self_loops += 1
+            continue
         if r["source"] in char_map and r["target"] in char_map:
             G.add_edge(
                 r["source"],
@@ -207,6 +212,8 @@ def build_graph(char_map, relationships):
             dropped += 1
     if dropped:
         logger.warning(f"  ⚠️ {dropped} 条关系因端点人物缺失被丢弃")
+    if self_loops:
+        logger.warning(f"  ⚠️ {self_loops} 条自环关系被丢弃")
 
     logger.info(f"图构建完成：{G.number_of_nodes()} 个节点, {G.number_of_edges()} 条边")
     return G
@@ -238,17 +245,23 @@ def save_graph(G, filepath):
 
 
 def load_graph(filepath):
-    """从 JSON 加载图（DiGraph，与 build_graph 一致保留方向）"""
+    """从 JSON 加载图（DiGraph，与 build_graph 一致保留方向；自环边在加载时过滤）"""
     with open(filepath, "r", encoding="utf-8") as f:
         data = json.load(f)
     G = nx.DiGraph()
     for n in data["nodes"]:
         name = n.pop("name")
         G.add_node(name, **n)
+    self_loops = 0
     for e in data["edges"]:
         source = e.pop("source")
         target = e.pop("target")
+        if source == target:
+            self_loops += 1
+            continue
         G.add_edge(source, target, **e)
+    if self_loops:
+        logger.info(f"已过滤 {self_loops} 条自环边")
     logger.info(f"图已加载: {G.number_of_nodes()} 节点, {G.number_of_edges()} 条边")
     return G
 
