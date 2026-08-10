@@ -10,73 +10,16 @@ services:
     env_file:
       - .env
     volumes:
+      # 应用运行数据（wiki/图谱/记忆等，CWD 为 /app/novel_project）
+      - ./novel_project/data:/app/novel_project/data
+      # 仓库级数据（JWT 密钥、日志等，按 REPO_ROOT 解析）
       - ./data:/app/data
       - ./config.yaml:/app/config.yaml
-    depends_on:
-      neo4j:
-        condition: service_started
-      chromadb:
-        condition: service_started
-      redis:
-        condition: service_started
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request;urllib.request.urlopen('http://localhost:8000/health')"]
       interval: 30s
       timeout: 10s
-      retries: 3
-
-  # ===== 图数据库 (热数据) =====
-  neo4j:
-    image: neo4j:5-community
-    container_name: novel-graphrag-neo4j
-    ports:
-      - "7474:7474"   # HTTP
-      - "7687:7687"   # Bolt
-    environment:
-      - NEO4J_AUTH=neo4j/${NEO4J_PASSWORD:-novelgraphrag2024}
-      - NEO4J_PLUGINS=["apoc"]
-    volumes:
-      - neo4j_data:/data
-      - neo4j_logs:/logs
-    restart: unless-stopped
-    healthcheck:
-      test: ["CMD", "cypher-shell", "-u", "neo4j", "-p", "${NEO4J_PASSWORD:-novelgraphrag2024}", "RETURN 1"]
-      interval: 30s
-      timeout: 15s
-      retries: 5
-
-  # ===== 向量数据库 =====
-  chromadb:
-    image: chromadb/chroma:latest
-    container_name: novel-graphrag-chromadb
-    ports:
-      - "8001:8000"
-    volumes:
-      - chromadb_data:/chroma/chroma
-    environment:
-      - IS_PERSISTENT=TRUE
-      - PERSIST_DIRECTORY=/chroma/chroma
-    restart: unless-stopped
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8001/api/v1/heartbeat"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-
-  # ===== 缓存 + 消息队列 =====
-  redis:
-    image: redis:7-alpine
-    container_name: novel-graphrag-redis
-    ports:
-      - "6379:6379"
-    volumes:
-      - redis_data:/data
-    restart: unless-stopped
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 30s
-      timeout: 5s
       retries: 3
 
   # ===== 反向代理 =====
@@ -85,7 +28,6 @@ services:
     container_name: novel-graphrag-nginx
     ports:
       - "80:80"
-      - "443:443"
     volumes:
       - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
       - ./certbot/www:/var/www/certbot:ro
@@ -93,9 +35,3 @@ services:
     depends_on:
       - app
     restart: unless-stopped
-
-volumes:
-  neo4j_data:
-  neo4j_logs:
-  chromadb_data:
-  redis_data:

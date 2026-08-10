@@ -14,8 +14,11 @@ RUN pip install --no-cache-dir -r requirements.txt
 # 项目代码
 COPY . .
 
-# 数据目录
-RUN mkdir -p data/raw data/processed data/wiki data/memory data/eval/golden
+# 数据目录（应用以 novel_project 为工作目录运行，数据读写均在其下）
+RUN mkdir -p novel_project/data/raw novel_project/data/processed \
+    novel_project/data/wiki novel_project/data/memory novel_project/data/eval/golden
+
+WORKDIR /app/novel_project
 
 EXPOSE 8000
 

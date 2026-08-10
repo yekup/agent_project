@@ -4,6 +4,7 @@ uvicorn[standard]==0.50.0
 jinja2==3.1.6
 python-multipart==0.0.32
 pydantic==2.13.4
+python-dotenv==1.0.1
 
 # ===== Document Parsing / Export =====
 python-docx==1.2.0
@@ -18,10 +19,14 @@ dashscope==1.26.3
 
 # ===== Vector/Embedding =====
 chromadb==1.5.9
+# 中文嵌入模型（BGE-large-zh-v1.5）；缺失时 VectorStoreIndexer 自动回退 chromadb 默认 ONNX
+torch==2.12.1
+sentence-transformers==5.6.0
 
 # ===== Graph =====
 networkx==3.6.1
 neo4j==6.2.0
+langgraph>=0.2.0
 
 # ===== Search/Dedup =====
 datasketch==1.10.0
