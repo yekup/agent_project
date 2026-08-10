@@ -67,7 +67,10 @@ body{background:#0c1222;color:#e2e8f0;height:100vh;display:flex;flex-direction:c
 <div class="glass flex-1 flex flex-col">
 <div id="chatHeader" class="px-5 py-3 border-b border-tech-border flex items-center justify-between">
 <span id="sessionTitle" class="text-sm font-bold">新对话</span>
+<div class="flex items-center gap-3">
+<select id="novelSelector" onchange="onNovelChange()" title="选择书籍" class="px-2 py-1 rounded-lg bg-tech-card border border-tech-border text-white text-xs outline-none focus:border-[#22d3ee]"></select>
 <span id="msgCount" class="text-xs text-tech-text/50"></span>
+</div>
 </div>
 <div id="chatMessages" class="flex-1 overflow-y-auto p-5 space-y-4 scroll-hide"></div>
 <div class="p-4 border-t border-tech-border">
@@ -106,6 +109,27 @@ let currentSessionId = null;
 let _streamingAbort = null;
 
 const STORAGE_KEY = 'novelgraph_chat_sessions';
+const NOVEL_KEY = 'novelgraph_chat_novel';
+
+/* 书籍选择器：从 /api/novels 加载，选择持久化到 localStorage */
+function currentNovel() {
+  const sel = document.getElementById('novelSelector');
+  return sel ? sel.value : '';
+}
+function onNovelChange() {
+  try { localStorage.setItem(NOVEL_KEY, currentNovel()); } catch(e) {}
+}
+function loadNovels() {
+  AUTH.apiFetch('/api/novels').then(r => r.json()).then(novels => {
+    const sel = document.getElementById('novelSelector');
+    if (!sel || !novels.length) return;
+    novels.forEach(n => {
+      sel.innerHTML += `<option value="${n.name}">${n.display_name || n.name}</option>`;
+    });
+    const saved = localStorage.getItem(NOVEL_KEY);
+    if (saved && novels.some(n => n.name === saved)) sel.value = saved;
+  }).catch(() => {});
+}
 
 function loadSessions() {
   try {
@@ -268,7 +292,7 @@ function showChapterModal(keyword) {
   document.body.appendChild(overlay);
 
   // 请求原文
-  AUTH.apiFetch('/api/chapter?keyword=' + encodeURIComponent(keyword) + '&novel=绍宋作者：榴弹怕水')
+  AUTH.apiFetch('/api/chapter?keyword=' + encodeURIComponent(keyword) + '&novel=' + encodeURIComponent(currentNovel()))
     .then(r => r.json())
     .then(data => {
       const el = document.getElementById('chapterContent');
@@ -313,7 +337,7 @@ async function sendMessage() {
     const resp = await AUTH.apiFetch('/api/ask/stream', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ query: text, session_id: currentSessionId })
+      body: JSON.stringify({ query: text, session_id: currentSessionId, novel: currentNovel() })
     });
 
     const reader = resp.body.getReader();
@@ -385,6 +409,7 @@ function quickQuestion(q) {
 
 // 初始化
 loadSessions();
+loadNovels();
 if (sessions.length) switchSession(sessions[0].id);
 </script>
 </body>

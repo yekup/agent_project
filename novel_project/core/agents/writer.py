@@ -22,6 +22,14 @@ from core.llm import call_llm
 # 可用章节来源 ≥ 该值时启用章节引用模式；否则无引用模式
 MIN_CHAPTER_SOURCES_FOR_CITATION = 3
 
+# 引用标记统一匹配：LLM 实际输出中「引自 X」/（引自 X）/(引自 X) 三种写法都出现过，
+# 校验和清理必须覆盖全部形态，否则括号形态会漏网（Reviewer 侧仍会按引用对待 → 误报 fake_citation）
+_CITATION_RE = re.compile(
+    r"「([^」]*(?:引自|出自)[^」]*)」"
+    r"|（([^（）]*(?:引自|出自)[^（）]*)）"
+    r"|\(([^()]*(?:引自|出自)[^()]*)\)"
+)
+
 
 WRITER_PROMPT_NO_CITATION = """你是一个网文分析专家。请根据 Researcher 提供的资料，概括分析。
 
@@ -115,10 +123,8 @@ class Writer:
             report = call_llm([{"role": "user", "content": prompt}])
             if not report:
                 return "（LLM 服务暂时不可用，无法生成报告。请检查 API 配置后重试。）"
-            # 清理可能残留的引用标记
-            report, n_removed = re.subn(
-                r'「[^」]*(?:引自|出自)[^」]*」', '', report,
-            )
+            # 清理可能残留的引用标记（三种括号形态统一清除）
+            report, n_removed = _CITATION_RE.subn('', report)
             if n_removed > 0:
                 logger.info(f"  [Writer] 无引用模式下清除 {n_removed} 个残余引用")
             logger.info(f"  [Writer] 报告完成 ({len(report)} 字, 无引用模式)")
@@ -193,11 +199,12 @@ class Writer:
         规则:
           1. 「引自第一章 明道宫」中的章节号 → 1
              与 available_sources 中的「第一章 明道宫」章节号 → 1 匹配 → 保留
+             （非「」形态的引用统一规范化为「引自 X」）
           2. 「引自第八八章 决战」中的章节号 → 88
-             available_sources 中无章节号 88 → 降级为普通文本
+             available_sources 中无章节号 88 → 整体删除该引用标记
         """
         if not available_sources:
-            report = re.sub(r'「[^」]*(?:引自|出自)[^」]*」', '', report)
+            report = _CITATION_RE.sub('', report)
             logger.info(f"  [Writer] 无可用引用，已清除全部引用标记")
             return report
 
@@ -223,28 +230,30 @@ class Writer:
         def replace_fake(match):
             nonlocal fake_count, total_count
             total_count += 1
-            full_text = match.group(0)
-            inner = match.group(1)
+            # 三组括号形态取非空的那组
+            inner = next(g for g in match.groups() if g is not None)
 
             ref_name = re.sub(r"^(?:引自|出自)\s*", "", inner).strip()
             if not ref_name:
-                return full_text
+                return match.group(0)
 
             ref_norm = normalize(ref_name)
 
             # 规则 1: 完全匹配
             if ref_norm in exact_set:
-                return full_text
+                return f"「{inner.strip()}」"
 
             # 规则 2: 章节号匹配（"第一章" -> 1 匹配 "第1章" -> 1）
             ref_num = extract_num(ref_name)
             if ref_num is not None and ref_num in num_map:
-                return full_text
+                return f"「{inner.strip()}」"
 
+            # 编造的引用：整体删除。不能降级成（引自 X）——括号形态仍会被
+            # Reviewer 当作引用审查，导致 fake_citation 误报
             fake_count += 1
-            return f"（{inner}）"
+            return ""
 
-        result = re.sub(r'「([^」]*(?:引自|出自)[^」]*)」', replace_fake, report)
+        result = _CITATION_RE.sub(replace_fake, report)
 
         if fake_count > 0:
             logger.info(f"  [Writer] 校验引用: 清除 {fake_count}/{total_count} 个编造引用")

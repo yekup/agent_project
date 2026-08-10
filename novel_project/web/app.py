@@ -4,6 +4,15 @@ FastAPI 主入口（开发模式：无登录）
 import os
 import sys
 from contextlib import asynccontextmanager
+from pathlib import Path
+
+# 尽早加载项目根目录 .env（JWT_SECRET、ADMIN_PASSWORD、API key 等），
+# 不覆盖真实环境变量（docker/CI 注入优先）
+try:
+    from dotenv import load_dotenv
+    load_dotenv(Path(__file__).resolve().parents[1] / ".env")
+except ImportError:
+    pass
 
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse

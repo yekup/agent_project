@@ -30,7 +30,7 @@ REVIEW_PROMPT = """你是一个网文分析报告审核员。请严格审核以�
 1. 是否回答了用户问题？如偏离主题则判定不通过
 2. 每条结论是否有原文依据？如出现原文未提及的人物/事件/关系，属于幻觉
 3. 人物关系描述是否准确？如将两人关系写反或张冠李戴，属于别名/实体冲突
-4. 报告中的引用（「引自第X章」）是否能在检索到的原文片段中找到对应的章节名？如果引用了检索材料中不存在的章节，属于编造引用
+4. 报告中的引用（「引自第X章」）是否能在【可引用章节白名单】或检索到的原文片段中找到对应的章节名？只有引用了两者都不存在的章节，才属于编造引用
 5. 结构是否清晰、来源是否标注？
 
 以 JSON 格式返回：
@@ -85,8 +85,9 @@ class Reviewer:
                 "retrieval_hints": [],
             }
 
-        # 截取研究材料前 3000 字供 reviewer 做引用验证（避免超长）
-        materials_truncated = (research_materials or "")[:3000]
+        # 截取研究材料前 8000 字供 reviewer 做引用验证（避免超长；
+        # 与 coordinator 传入的截断上限保持一致）
+        materials_truncated = (research_materials or "")[:8000]
         if not materials_truncated.strip():
             materials_truncated = "（无原文片段提供）"
 

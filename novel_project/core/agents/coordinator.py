@@ -1,22 +1,35 @@
 """
-协调员 Agent
-负责：意图识别 → 任务分解 → 分发任务 → 汇总结果
+协调员 Agent — LangGraph 版本
+=============================
+使用 LangGraph StateGraph 替代硬编码 for 循环，
+审核失败分类处理通过条件边路由，新增失败类型只需加节点。
+
+图结构:
+  detect_intent → decompose_task → research → write → review
+    review → [passed]  → END
+    review → [failed]   → handle_failure → research（循环至 max_rounds）
+    review → [maxed out] → END (needs_manual_review)
 """
+from __future__ import annotations
 
 import json
 import logging
 import os
 import re
 import sys
-import uuid
-import time
+from typing import Annotated, Any, TypedDict
 
-logger = logging.getLogger(__name__)
+from langgraph.graph import StateGraph, END
+from langgraph.graph.state import CompiledStateGraph
 
 from core.llm import call_llm
 from core.material_pool import MaterialPool
 from core.security import audit_log
 
+logger = logging.getLogger(__name__)
+
+
+# ── 工具函数 ──
 
 def _extract_json_array(text: str | None) -> list | None:
     """从 LLM 响应中提取首个 JSON 数组（括号平衡解析，容忍尾随文字）"""
@@ -31,7 +44,9 @@ def _extract_json_array(text: str | None) -> list | None:
     except json.JSONDecodeError:
         return None
 
-# 意图识别 prompt
+
+# ── Prompt ──
+
 INTENT_PROMPT = """判断用户的问题属于哪种类型。
 只返回一个词，不要其他文字。
 
@@ -45,7 +60,6 @@ INTENT_PROMPT = """判断用户的问题属于哪种类型。
 问题：{query}
 """
 
-# 任务分解 prompt
 DECOMPOSE_PROMPT = """用户有一个{intent}类型的问题。
 请把这个任务拆解为 2-4 个 Researcher 可以执行的检索步骤。
 
@@ -62,44 +76,224 @@ DECOMPOSE_PROMPT = """用户有一个{intent}类型的问题。
 [{{"step": 1, "description": "..."}}]
 """
 
+
+# ── LangGraph 状态定义 ──────────────────────────────────────────────
+
+class CoordinatorState(TypedDict):
+    """LangGraph 图状态"""
+    query: str
+    max_rounds: int
+    intent: str
+    steps: list[dict]
+    completed_steps: list[dict]
+    round_num: int
+    draft: str
+    review: dict
+    done: bool
+    # 材料池序列化字段（MaterialPool 不能直接放 state）
+    _materials_text: str  # effective_text 缓存
+    _all_materials: list[dict]  # 全量材料（用于 reviewer 上下文）
+    _citation_whitelist: list[str]  # Writer 校验过的可引用章节名单（供 reviewer 核对）
+
+
+# ── 图节点 ──────────────────────────────────────────────────────────
+
+
+def _node_detect_intent(state: CoordinatorState, coordinator) -> dict:
+    """节点: 意图识别（调用方已预算时跳过，避免重复 LLM 调用）"""
+    if state.get("intent"):
+        logger.info(f"  [Coordinator] 意图识别: {state['intent']}（预计算）")
+        return {}
+    query = state["query"]
+    prompt = INTENT_PROMPT.format(query=query)
+    response = call_llm([{"role": "user", "content": prompt}])
+    intent = (response or "").strip().lower()
+    if intent not in ["character", "relationship", "summary", "complex", "other"]:
+        intent = "other"
+    logger.info(f"  [Coordinator] 意图识别: {intent}")
+    return {"intent": intent}
+
+
+def _node_decompose(state: CoordinatorState, coordinator) -> dict:
+    """节点: 任务分解（调用方已预算时跳过，避免重复 LLM 调用）"""
+    if state.get("steps"):
+        logger.info(f"  [Coordinator] 任务拆解: {len(state['steps'])} 步（预计算）")
+        return {}
+    query = state["query"]
+    intent = state["intent"]
+    prompt = DECOMPOSE_PROMPT.format(intent=intent, query=query)
+    response = call_llm([{"role": "user", "content": prompt}])
+    steps = _extract_json_array(response)
+    if not steps:
+        steps = coordinator._default_steps(intent, query)
+    logger.info(f"  [Coordinator] 任务拆解: {len(steps)} 步")
+    # 重置步骤编号确保唯一
+    for i, s in enumerate(steps):
+        if "step" not in s:
+            s["step"] = i + 1
+    return {"steps": steps, "round_num": 0, "completed_steps": [],
+            "_all_materials": [], "done": False}
+
+
+def _node_research(state: CoordinatorState, coordinator) -> dict:
+    """节点: 执行未完成的检索步骤"""
+    round_num = state["round_num"]
+    steps = state["steps"]
+    completed = state["completed_steps"]
+    all_materials = state.get("_all_materials", [])
+    completed_ids = {s["step"] for s in completed}
+
+    round_materials = []
+    for step in steps:
+        if step["step"] in completed_ids:
+            continue
+        desc = step["description"]
+        logger.info(f"  [Coordinator] 分配任务: {desc}")
+        result = coordinator.researcher.execute(desc, state["query"], state["intent"])
+        round_materials.append({"step": step["step"], "description": desc, "result": result})
+        completed.append(step)
+        completed_ids.add(step["step"])
+
+    all_materials.extend(round_materials)
+    coordinator._pool.add_round(round_materials)
+
+    return {
+        "completed_steps": completed,
+        "_all_materials": all_materials,
+        "_materials_text": coordinator._pool.get_effective(),
+    }
+
+
+def _node_write(state: CoordinatorState, coordinator) -> dict:
+    """节点: 生成报告"""
+    effective = state.get("_materials_text") or coordinator._pool.get_effective()
+    materials = [{"step": 0, "description": "汇总资料", "result": effective}]
+    draft = coordinator.writer.write(state["query"], state["intent"], materials)
+    # 用与 Writer 内部校验完全相同的逻辑提取来源名单，交给 Reviewer 核对引用，
+    # 避免 Reviewer 只能看到截断材料而误判 fake_citation。
+    # _extract_chapter_sources 是 Writer 的静态方法，直接走类调用（兼容注入的替身）
+    from core.agents.writer import Writer
+    whitelist = Writer._extract_chapter_sources(materials)
+    return {"draft": draft, "_citation_whitelist": whitelist}
+
+
+def _node_review(state: CoordinatorState, coordinator) -> dict:
+    """节点: 审核报告"""
+    query = state["query"]
+    draft = state["draft"]
+    all_materials = state.get("_all_materials", [])
+
+    sections = []
+    whitelist = state.get("_citation_whitelist") or []
+    if whitelist:
+        sections.append(
+            "【可引用章节白名单】（以下章节在检索材料中真实存在，"
+            "报告引用名单内章节不属于编造引用）\n" + "\n".join(whitelist)
+        )
+    # 审核材料必须与 Writer 所见一致（effective_text：含图谱关系、PPR、社群等
+    # 全部检索产物）。只给末几条截断材料会导致 Reviewer 把真实的图谱关系
+    # 误判为幻觉——一次误判引发的重写轮成本远高于多给几千字上下文
+    body = state.get("_materials_text") or coordinator._pool.get_effective()
+    if not body.strip():
+        body = "\n".join(
+            [m.get("result", "")[:500] for m in all_materials[-3:] if m.get("result")]
+        )
+    if body.strip():
+        sections.append("【检索到的原文片段】\n" + body)
+    research_text = "\n\n".join(sections)[:8000]
+    review = coordinator.reviewer.review(draft, query, research_materials=research_text)
+
+    # 审计日志
+    review_status = "failure" if not review["passed"] else "success"
+    audit_log(
+        action="review", user="system", resource=query[:120],
+        detail=f"Round {state['round_num'] + 1}/{state['max_rounds']} | "
+               f"Type: {review.get('failure_type', 'none')} | "
+               f"Score: {review.get('score', 0)} | "
+               f"Feedback: {review.get('feedback', '')[:200]}",
+        status=review_status,
+        failure_type=review.get("failure_type", ""),
+    )
+
+    if review["passed"]:
+        logger.info(f"  [Coordinator] 审核通过（第 {state['round_num'] + 1} 轮）")
+    else:
+        logger.warning(f"  [Coordinator] 审核未通过 (类型: {review.get('failure_type', 'unknown')})")
+
+    return {"review": review}
+
+
+def _node_handle_failure(state: CoordinatorState, coordinator) -> dict:
+    """节点: 审核失败 → 分类处理 → 生成补充步骤"""
+    review = state["review"]
+    steps = state["steps"]
+    new_steps = coordinator._handle_review_failure(steps, review, state["query"])
+    if new_steps:
+        logger.info(f"  [Coordinator] 补充 {len(new_steps)} 个检索步骤后重试")
+        next_step = max(s["step"] for s in steps) + 1
+        for i, ns in enumerate(new_steps):
+            ns["step"] = next_step + i
+        steps = steps + new_steps
+        return {"steps": steps, "round_num": state["round_num"] + 1}
+    # 无法生成补充步骤 → 标记终止，避免空转重试（保持旧版 break 行为）
+    logger.warning(f"  [Coordinator] 无法继续优化")
+    return {"steps": steps, "round_num": state["round_num"] + 1, "done": True}
+
+
+# ── 条件边 ──────────────────────────────────────────────────────────
+
+
+def _route_after_review(state: CoordinatorState) -> str:
+    """审核后路由"""
+    review = state.get("review", {})
+    if review.get("passed"):
+        return "end"
+    if state["round_num"] >= state["max_rounds"] - 1:
+        logger.warning(f"  [Coordinator] 达到最大轮数，返回当前结果")
+        return "end_maxed"
+    return "handle_failure"
+
+
+def _route_after_failure(state: CoordinatorState) -> str:
+    """失败处理后路由：无补充步骤 → 终止；否则回到 research 重试"""
+    if state.get("done"):
+        return "end"
+    return "research"
+
+
+# ═════════════════════════════════════════════════════════════════════
+#  协调员（保持旧接口兼容）
+# ═════════════════════════════════════════════════════════════════════
+
 class Coordinator:
-    """协调员：接收问题 → 意图识别 → 拆解任务 → 调度 Agent → 汇总"""
+    """协调员：LangGraph 驱动的多 Agent 编排"""
 
     def __init__(self, researcher, writer, reviewer):
-        """
-        参数:
-            researcher: Researcher Agent 实例
-            writer: Writer Agent 实例
-            reviewer: Reviewer Agent 实例
-        """
         self.researcher = researcher
         self.writer = writer
         self.reviewer = reviewer
+        self._pool: MaterialPool = None
+        self._graph: CompiledStateGraph | None = None
+
+    # ── 保持旧接口兼容 ──────────────────────────────────────────────
 
     def detect_intent(self, query):
-        """第 1 步：意图识别"""
         prompt = INTENT_PROMPT.format(query=query)
         response = call_llm([{"role": "user", "content": prompt}])
         intent = (response or "").strip().lower()
         if intent not in ["character", "relationship", "summary", "complex", "other"]:
             intent = "other"
-        logger.info(f"  [Coordinator] 意图识别: {intent}")
         return intent
 
     def decompose_task(self, query, intent):
-        """第 2 步：根据意图拆解任务"""
         prompt = DECOMPOSE_PROMPT.format(intent=intent, query=query)
         response = call_llm([{"role": "user", "content": prompt}])
-
         steps = _extract_json_array(response)
-        if steps:
-            logger.info(f"  [Coordinator] 任务拆解: {len(steps)} 步")
-            return steps
-        # 兜底：按意图类型走默认流程
-        return self._default_steps(intent, query)
+        if not steps:
+            steps = self._default_steps(intent, query)
+        return steps
 
     def _default_steps(self, intent, query):
-        """兜底任务分解"""
         if intent == "character":
             return [
                 {"step": 1, "description": f"在 Wiki 中搜索与「{query}」相关的人物信息"},
@@ -120,149 +314,113 @@ class Coordinator:
                 {"step": 1, "description": f"搜索与「{query}」相关的所有信息"},
             ]
 
-    def run(self,query,max_rounds=5):
+    # ── 图构建（延迟初始化）──────────────────────────────────────────
+
+    def _build_graph(self) -> CompiledStateGraph:
+        """构建 LangGraph 状态图"""
+        builder = StateGraph(CoordinatorState)
+
+        # 注册节点（用 lambda 绑定 self）
+        builder.add_node("detect_intent", lambda s: _node_detect_intent(s, self))
+        builder.add_node("decompose", lambda s: _node_decompose(s, self))
+        builder.add_node("research", lambda s: _node_research(s, self))
+        builder.add_node("write", lambda s: _node_write(s, self))
+        builder.add_node("review", lambda s: _node_review(s, self))
+        builder.add_node("handle_failure", lambda s: _node_handle_failure(s, self))
+
+        # 边
+        builder.set_entry_point("detect_intent")
+        builder.add_edge("detect_intent", "decompose")
+        builder.add_edge("decompose", "research")
+        builder.add_edge("research", "write")
+        builder.add_edge("write", "review")
+
+        # 条件边：审核通过 → END；不通过 → handle_failure → research（循环）
+        builder.add_conditional_edges("review", _route_after_review, {
+            "end": END,
+            "end_maxed": END,
+            "handle_failure": "handle_failure",
+        })
+        # 失败处理：有补充步骤 → research 重试；无法补充 → END（保持旧版 break 行为）
+        builder.add_conditional_edges("handle_failure", _route_after_failure, {
+            "end": END,
+            "research": "research",
+        })
+
+        return builder.compile()
+
+    # ── 主入口 ───────────────────────────────────────────────────────
+
+    def run(self, query, max_rounds=5, intent=None, steps=None):
         """
-        完整流程：意图识别 → 任务拆解 → 多轮执行 → 汇总输出
-        
+        完整流程：意图识别 → 任务分解 → 多轮执行 → 汇总输出
+
         参数:
             query: 用户问题
-            max_rounds: 最多执行轮数（防止死循环）
-        
+            max_rounds: 最多执行轮数
+            intent: 可选，调用方预算好的意图（跳过 detect_intent 节点内的 LLM 调用）
+            steps: 可选，调用方预算好的检索步骤（跳过 decompose 节点内的 LLM 调用）
+
         返回:
-            dict: {query, intent, steps, final_report, review_result}
+            dict: {query, intent, steps, final_report, review_result, rounds}
         """
         logger.info(f"\n [Coordinator] 收到问题：{query}")
 
-        #第一步：意图识别
-        intent = self.detect_intent(query)
+        self._pool = MaterialPool(llm_compress=True, max_rounds=3)
 
-        #第二步：任务拆解
-        steps = self.decompose_task(query,intent)
+        if self._graph is None:
+            self._graph = self._build_graph()
+        graph = self._graph
 
-        #第三步：多轮执行（使用 MaterialPool 管理上下文膨胀）
-        pool = MaterialPool(llm_compress=True, max_rounds=3)
-        all_materials = []
-        completed_steps = []
+        if steps:
+            # 与 _node_decompose 保持一致的编号规整
+            for i, s in enumerate(steps):
+                if "step" not in s:
+                    s["step"] = i + 1
 
-        for round_num in range(max_rounds):
-            logger.info(f"\n  --- 第 {round_num + 1} 轮执行 ---")
-            round_materials = []
-
-            for step in steps:
-                if step["step"] in [s["step"] for s in completed_steps]:
-                    continue
-
-                desc = step["description"]
-                logger.info(f"  [Coordinator] 分配任务: {desc}")
-
-                result = self.researcher.execute(desc, query, intent)
-                round_materials.append({
-                    "step": step["step"],
-                    "description": desc,
-                    "result": result,
-                })
-                completed_steps.append(step)
-
-            all_materials.extend(round_materials)
-
-            # 加入材料池（自动压缩旧材料）
-            pool.add_round(round_materials)
-
-            # 使用池中的有效文本生成报告（第1轮全量，后续轮次压缩）
-            effective_text = pool.get_effective()
-            draft = self.writer.write(query, intent, [{"step": 0, "description": "汇总资料", "result": effective_text}])
-
-            # ── 审核（每轮都审，不再跳过第1轮）──
-            # 将检索材料摘要传给 reviewer 做引用真实性验证
-            research_text = "\n".join(
-                [m.get("result", "")[:500] for m in all_materials[-3:] if m.get("result")]
-            )[:3000]
-            review = self.reviewer.review(draft, query, research_materials=research_text)
-
-            # 记录审核审计日志
-            review_status = "failure" if not review["passed"] else "success"
-            failure_detail = (
-                f"Round {round_num + 1}/{max_rounds} | "
-                f"Type: {review.get('failure_type', 'none')} | "
-                f"Score: {review.get('score', 0)} | "
-                f"Feedback: {review.get('feedback', '')[:200]}"
-            )
-            audit_log(
-                action="review",
-                user="system",
-                resource=query[:120],
-                detail=failure_detail,
-                status=review_status,
-                failure_type=review.get("failure_type", ""),
-            )
-
-            if review["passed"]:
-                logger.info(f"  [Coordinator] 审核通过（第 {round_num + 1} 轮）")
-                return {
-                    "query": query,
-                    "intent": intent,
-                    "steps": steps,
-                    "materials": all_materials,
-                    "final_report": draft,
-                    "review_result": review,
-                    "rounds": round_num + 1,
-                }
-            else:
-                logger.warning(f"  [Coordinator] 审核未通过 (类型: {review.get('failure_type', 'unknown')})")
-                logger.warning(f"  [Coordinator] 反馈: {review.get('feedback', '')[:120]}...")
-
-                if round_num < max_rounds - 1:
-                    new_steps = self._handle_review_failure(steps, review)
-                    if new_steps:
-                        logger.info(f"  [Coordinator] 补充 {len(new_steps)} 个检索步骤后重试")
-                        steps.extend(new_steps)
-                        continue  # 进入下一轮
-
-                # 无法修复或已达最大轮数，返回当前结果
-                logger.warning(f"  [Coordinator] 无法继续优化，返回当前结果（需人工审核）")
-                break
-
-        # 所有轮次用完仍未通过审核
-        logger.warning(f"  [Coordinator] 审核未通过，返回最终结果（需人工审核）")
-        return {
+        initial_state: CoordinatorState = {
             "query": query,
-            "intent": intent,
-            "steps": completed_steps,
-            "materials": all_materials,
-            "final_report": draft,
-            "review_result": review,
-            "rounds": max_rounds,
-            "needs_manual_review": True,
+            "max_rounds": max_rounds,
+            "intent": intent or "",
+            "steps": steps or [],
+            "completed_steps": [],
+            "round_num": 0,
+            "draft": "",
+            "review": {},
+            "done": False,
+            "_materials_text": "",
+            "_all_materials": [],
+            "_citation_whitelist": [],
         }
 
+        # 执行图
+        result = graph.invoke(initial_state)
+
+        return {
+            "query": query,
+            "intent": result["intent"],
+            "steps": result["steps"],
+            "materials": result.get("_all_materials", []),
+            "final_report": result["draft"],
+            "review_result": result.get("review", {}),
+            "rounds": result["round_num"] + 1,
+            # 图跑完仍未通过审核 → 调用方自行决定是否人工介入
+            "needs_manual_review": result.get("review", {}).get("passed") is False,
+        }
+
+    # ── 审核失败处理（保持旧逻辑）─────────────────────────────────────
+
     def _refine_plan(self, old_steps, feedback):
-        """根据 Reviewer 反馈，补充新的检索步骤"""
         prompt = f"""已有检索步骤：{json.dumps(old_steps, ensure_ascii=False)}
 审核反馈：{feedback}
 根据反馈，还需要补充哪些检索步骤？
 以 JSON 数组格式返回，如 [{{"step": 3, "description": "..."}}]
 不需要补充则返回 []"""
-
         response = call_llm([{"role": "user", "content": prompt}])
         new_steps = _extract_json_array(response)
-        if new_steps is not None:
-            return new_steps
-        return []
+        return new_steps if new_steps is not None else []
 
-    def _handle_review_failure(self, old_steps, review):
-        """
-        根据审核失败类型生成针对性的补充检索步骤。
-
-        分类处理:
-          - evidence_missing → 使用 retrieval_hints 补充检索
-          - alias_conflict   → 查询知识图谱核实实体关系
-          - hallucination    → 基于原文事实验证
-          - fake_citation    → 重新生成报告（注入可用来源列表）
-          - irrelevant       → 重新分解任务
-          - other            → 通用反馈兜底
-
-        返回新步骤列表，无需补充返回 []。
-        """
+    def _handle_review_failure(self, old_steps, review, query=""):
         failure_type = review.get("failure_type", "other")
         feedback = review.get("feedback", "")
         retrieval_hints = review.get("retrieval_hints", [])
@@ -272,55 +430,43 @@ class Coordinator:
         next_step = max(s["step"] for s in old_steps) + 1 if old_steps else 1
 
         if failure_type == "evidence_missing" and (retrieval_hints or missing_entities):
-            # 证据不足 → 按 reviewers 提示定向补充检索
             hints = retrieval_hints[:]
             if missing_entities:
                 hints.extend([f"搜索「{e}」的详细信息" for e in missing_entities])
             for i, hint in enumerate(hints):
-                new_steps.append({
-                    "step": next_step + i,
-                    "description": f"补充检索: {hint}",
-                })
+                new_steps.append({"step": next_step + i, "description": f"补充检索: {hint}"})
             logger.info(f"  [Coordinator] ↳ 证据不足 → 补充 {len(new_steps)} 个定向检索")
 
         elif failure_type == "alias_conflict" and missing_entities:
-            # 别名/实体冲突 → 知识图谱定向核实
             for i, entity in enumerate(missing_entities):
-                new_steps.append({
-                    "step": next_step + i,
-                    "description": f"核实关系: 在知识图谱中查询「{entity}」的所有关系",
-                })
+                new_steps.append({"step": next_step + i,
+                                  "description": f"核实关系: 在知识图谱中查询「{entity}」的所有关系"})
             logger.info(f"  [Coordinator] ↳ 实体冲突 → 核实 {len(new_steps)} 个实体关系")
 
         elif failure_type == "hallucination":
-            # 幻觉 → 基于原文事实验证
-            hallucination_hint = feedback[:200] if feedback else "检查报告是否有原文不存在的内容"
-            new_steps.append({
-                "step": next_step,
-                "description": f"原文验证: {hallucination_hint}，请基于原文（不是 Wiki 摘要）核实每条结论",
-            })
+            hint = feedback[:200] if feedback else "检查报告是否有原文不存在的内容"
+            new_steps.append({"step": next_step,
+                              "description": f"原文验证: {hint}，请基于原文核实每条结论"})
             logger.info(f"  [Coordinator] ↳ 检测到幻觉 → 启动原文事实验证")
 
         elif failure_type == "fake_citation":
-            # 编造引用 → 直接重新生成报告（不需要检索）
-            # 在下一轮中 Writer 会注入可用来源列表并校验引用
             logger.info(f"  [Coordinator] ↳ 编造引用 → 重新生成报告")
-            # 给 Writer 一个更严格的指令
-            citation_hint = feedback[:200] if feedback else "报告中存在编造的章节引用，必须只引用检索到的实际章节"
-            new_steps.append({
-                "step": next_step,
-                "description": f"重新撰写: {citation_hint}，只引用【可引用的来源章节】中的内容",
-            })
+            hint = feedback[:200] if feedback else "报告中存在编造的引用"
+            new_steps.append({"step": next_step,
+                              "description": f"重新撰写: {hint}，只引用可引用的来源"})
 
         elif failure_type == "irrelevant":
-            # 偏离问题 → 用通用反馈重新分解
-            logger.info(f"  [Coordinator] ↳ 偏离问题 → 重新规划检索策略")
+            # 确定性补救：围绕原始问题全量重检 + 扣题重写，
+            # 不再落入无引导的 _refine_plan 兜底
+            new_steps.append({"step": next_step,
+                              "description": f"围绕原始问题做全量综合检索: {query[:80]}"})
+            new_steps.append({"step": next_step + 1,
+                              "description": f"扣题重写: 逐段对照问题「{query[:50]}」，删除无关内容"})
+            logger.info(f"  [Coordinator] ↳ 偏离问题 → 全量重检 + 扣题重写")
 
         else:
-            # other / 兜底 → 通用反馈处理
             logger.info(f"  [Coordinator] ↳ 其他问题 → 通用优化")
 
-        # 如果专项策略未生成步骤，用 _refine_plan 兜底
         if not new_steps:
             new_steps = self._refine_plan(old_steps, feedback)
 

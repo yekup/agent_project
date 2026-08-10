@@ -18,7 +18,16 @@ from __future__ import annotations
 import json
 import os
 import logging
+from pathlib import Path
 from typing import Any
+
+# 从项目根目录 .env 加载配置（DEEPSEEK_API_KEY 等）。
+# 不覆盖已存在的真实环境变量（override=False），docker/CI 注入的变量优先。
+try:
+    from dotenv import load_dotenv
+    load_dotenv(Path(__file__).resolve().parents[2] / ".env")
+except ImportError:
+    pass
 
 logger = logging.getLogger(__name__)
 
@@ -123,6 +132,24 @@ def _get_api_key_env() -> str:
     return PROVIDERS[_DEFAULT_PROVIDER]["api_key_env"]
 
 
+def _make_client(api_key: str, base_url: str | None):
+    """
+    构造 OpenAI 兼容客户端。
+
+    重试策略：SDK 内置指数退避重试（覆盖 429/5xx/连接错误/超时），
+    默认 3 次，可用 LLM_MAX_RETRIES 调整。认证错误（401/403）不重试——
+    重试无意义且会放大账单。
+    """
+    from openai import OpenAI
+
+    return OpenAI(
+        api_key=api_key,
+        base_url=base_url,
+        timeout=float(os.environ.get("LLM_TIMEOUT", "60")),
+        max_retries=int(os.environ.get("LLM_MAX_RETRIES", "3")),
+    )
+
+
 def call_llm(
     messages: list[dict],
     temperature: float = 0.7,
@@ -156,13 +183,7 @@ def call_llm(
         return None
 
     try:
-        from openai import OpenAI
-
-        client = OpenAI(
-            api_key=api_key,
-            base_url=base_url,
-            timeout=float(os.environ.get("LLM_TIMEOUT", "60")),
-        )
+        client = _make_client(api_key, base_url)
 
         kwargs = dict(
             model=model,
@@ -203,13 +224,7 @@ def call_llm_stream(
         return
 
     try:
-        from openai import OpenAI
-
-        client = OpenAI(
-            api_key=api_key,
-            base_url=base_url,
-            timeout=float(os.environ.get("LLM_TIMEOUT", "60")),
-        )
+        client = _make_client(api_key, base_url)
 
         stream = client.chat.completions.create(
             model=model,
