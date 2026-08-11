@@ -397,33 +397,21 @@ class DocxParser(DocumentParser):
 
 class PdfParser(DocumentParser):
     """
-    PDF 文档解析器。
+    PDF 文档解析器（三层引擎策略）。
 
     依赖:
-        pip install pdfplumber
+        pip install pdfplumber          # 默认快路径（MIT）
+        pip install docling             # 可选高质量路径（MIT，表格/复杂版式）
 
-    特性:
-        - 文字版 PDF：直接提取文字，按段落重构
-        - 多栏排版：按阅读顺序排序（x_tolerance 参数）
-        - 段落重组：按行间距和缩进合并为段落
-        - 页眉页脚过滤：根据位置和特征自动剔除
-        - 章节检测：复用通用 extract_chapters()
+    策略:
+        1. 无文字层（扫描件）→ 诚实降级：ocr_required 标记 + 可选方案提示，
+           不伪装解析成功（OCR 95-99% 的字符精度会污染实体抽取）
+        2. pdfplumber 快路径：坐标分析，纯文本/简单版式够用
+        3. Docling 高质量路径（NOVEL_PDF_ENGINE=docling 强制指定；
+           auto 模式下 pdfplumber 产出过低且已安装 docling 时自动升级）
 
-    扫描件 OCR（未来扩展）:
-        - 检测到无文字层时，提示用户安装 PaddleOCR
-        - 参考开源项目:
-            - PDF-Extract-Kit (规则引擎 + 轻量模型)
-            - PaddleOCR (中文 OCR)
-            - marker (PDF → Markdown 管线)
-            - MinerU (完整版面分析)
-
-    设计参考:
-        PDF-Extract-Kit: https://github.com/opendatalab-ai/PDF-Extract-Kit
-            规则引擎思路：基于文字坐标、字号、间距做版面分析
-        PaddleOCR: https://github.com/PaddlePaddle/PaddleOCR
-            中文 OCR 识别 + 段落重构
-        marker: https://github.com/VikParuchuri/marker
-            PDF → 段落重组 → Markdown 管线
+    许可证说明：刻意不选 PyMuPDF4LLM(AGPL) / Marker(GPL) / MinerU(AGPL 系)，
+    避免传染本项目的 MIT 许可。
     """
 
     extensions = [".pdf"]
@@ -443,21 +431,48 @@ class PdfParser(DocumentParser):
         except ImportError:
             raise ImportError("请先安装 pdfplumber: pip install pdfplumber")
 
-        # ── 1. 检测是否有文字层 ──
-        has_text = self._has_text_layer(filepath)
-        if not has_text:
+        # ── 1. 检测是否有文字层（采样前 3 页，兼容空白封面页）──
+        if not self._has_text_layer(filepath):
             return {
                 "title": filepath.stem,
                 "chapters": [],
                 "metadata": {
                     "format": "pdf",
-                    "error": "此 PDF 为扫描件，无文字层。请安装 PaddleOCR 后重试。",
+                    "error": (
+                        "此 PDF 为扫描件（无文字层），需要 OCR 识别。"
+                        "OCR 字符级精度约 95-99%，人名/地名错字会影响实体抽取质量。"
+                        "可选方案：pip install docling（MIT，内置 OCR 管线）"
+                        "或 PaddleOCR（中文识别最强）后重试。"
+                    ),
                     "ocr_required": True,
                     **self.get_size_info(filepath),
                 },
             }
 
-        # ── 2. 逐页提取文字 ──
+        # ── 2. 选择解析引擎 ──
+        # NOVEL_PDF_ENGINE=docling 可强制走 Docling（表格/复杂版式质量更高）；
+        # auto 模式：pdfplumber 快路径，产出异常低且装了 docling 时自动升级
+        engine = os.environ.get("NOVEL_PDF_ENGINE", "auto").strip().lower()
+        if engine == "docling":
+            docling_result = self._parse_with_docling(filepath)
+            if docling_result is not None:
+                return docling_result
+            logger.warning("[PdfParser] 指定了 docling 但未安装，回退 pdfplumber")
+
+        result = self._parse_with_pdfplumber(filepath, pdfplumber)
+
+        # auto 模式质量兜底：平均每页字符数过低（<100）说明版式复杂
+        # （多栏/图文混排导致坐标法丢失文本），装了 docling 就自动升级重解析
+        if engine == "auto" and result["metadata"].get("chars_per_page", 0) < 100:
+            docling_result = self._parse_with_docling(filepath)
+            if docling_result is not None:
+                logger.info("[PdfParser] pdfplumber 产出过低，已自动升级 docling 引擎")
+                return docling_result
+
+        return result
+
+    def _parse_with_pdfplumber(self, filepath: Path, pdfplumber) -> dict:
+        """快路径：pdfplumber 坐标分析（纯文本/简单版式 PDF 够用）"""
         all_texts: list[dict] = []  # [{page, text, font_size, y0}]
         total_pages = 0
 
@@ -517,6 +532,7 @@ class PdfParser(DocumentParser):
             "chapters": chapters,
             "metadata": {
                 "format": "pdf",
+                "engine": "pdfplumber",
                 "pages": total_pages,
                 "chars_total": len(full_text),
                 "chars_cleaned": sum(len(c["text"]) for c in chapters),
@@ -527,17 +543,58 @@ class PdfParser(DocumentParser):
 
     # ── PDF 工具方法 ───────────────────────────────────────────────
 
+    def _parse_with_docling(self, filepath: Path) -> dict | None:
+        """
+        高质量路径：Docling（MIT 许可）版面分析 + 表格结构化。
+        未安装时返回 None（调用方回退 pdfplumber）。
+
+        注意：刻意不用 PyMuPDF4LLM / Marker / MinerU——它们分别是 AGPL/GPL，
+        会传染本项目的 MIT 许可；Docling 是目前 MIT 系里质量最高的。
+        """
+        try:
+            from docling.document_converter import DocumentConverter
+        except ImportError:
+            return None
+
+        try:
+            result = DocumentConverter().convert(str(filepath))
+            md_text = result.document.export_to_markdown()
+        except Exception as e:
+            logger.warning(f"[PdfParser] docling 解析失败（{e}），回退 pdfplumber")
+            return None
+
+        if not md_text or len(md_text.strip()) < 50:
+            return None
+
+        chapters = extract_chapters(md_text)
+        if not chapters:
+            chapters = [{"title": "全文", "text": md_text}]
+
+        return {
+            "title": filepath.stem,
+            "chapters": chapters,
+            "metadata": {
+                "format": "pdf",
+                "engine": "docling",
+                "chars_total": len(md_text),
+                "chars_cleaned": sum(len(c["text"]) for c in chapters),
+                **self.get_size_info(filepath),
+            },
+        }
+
     @staticmethod
-    def _has_text_layer(filepath: Path) -> bool:
-        """检测 PDF 是否有文字层（非扫描件）"""
+    def _has_text_layer(filepath: Path, sample_pages: int = 3) -> bool:
+        """检测 PDF 是否有文字层（非扫描件）。采样前 N 页，兼容空白封面/扉页"""
         try:
             import pdfplumber
             with pdfplumber.open(str(filepath)) as pdf:
                 if not pdf.pages:
                     return False
-                first_page = pdf.pages[0]
-                text = first_page.extract_text()
-                return bool(text and len(text.strip()) > 50)
+                for page in pdf.pages[:sample_pages]:
+                    text = page.extract_text()
+                    if text and len(text.strip()) > 50:
+                        return True
+                return False
         except Exception:
             return False
 

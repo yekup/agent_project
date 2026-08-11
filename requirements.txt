@@ -9,6 +9,9 @@ python-dotenv==1.0.1
 # ===== Document Parsing / Export =====
 python-docx==1.2.0
 pdfplumber==0.11.10
+# 可选：PDF 高质量解析引擎（表格/复杂版式），MIT 许可。
+# 不装也能跑（自动回退 pdfplumber），需要时取消注释：
+# docling>=2.0
 EbookLib==0.20
 openpyxl==3.1.5
 PyYAML==6.0.3

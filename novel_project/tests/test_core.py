@@ -1576,6 +1576,57 @@ class TestMaterialPoolDeferredCompress(unittest.TestCase):
         self.assertEqual(len(pool._rounds), 2)
 
 
+class TestPdfParserTiering(unittest.TestCase):
+    """PDF 三层引擎策略：扫描件诚实降级 / docling 缺失回退 / 低产出自动升级"""
+
+    def _parser(self):
+        from core.document_parser import PdfParser
+        return PdfParser()
+
+    def _fake_pdf(self):
+        import tempfile
+        f = tempfile.NamedTemporaryFile(suffix=".pdf", delete=False)
+        f.write(b"%PDF-1.4 fake")
+        f.close()
+        self.addCleanup(lambda: os.path.exists(f.name) and os.remove(f.name))
+        return f.name
+
+    def test_scanned_pdf_returns_ocr_required(self):
+        p = self._parser()
+        path = self._fake_pdf()
+        with patch.object(PdfParser := type(p), "_has_text_layer", return_value=False):
+            result = p.parse(path)
+        self.assertEqual(result["chapters"], [])
+        self.assertTrue(result["metadata"]["ocr_required"])
+        self.assertIn("扫描件", result["metadata"]["error"])
+
+    def test_docling_requested_but_missing_falls_back(self):
+        p = self._parser()
+        path = self._fake_pdf()
+        fake_result = {"title": "t", "chapters": [{"title": "全文", "text": "x" * 300}],
+                       "metadata": {"format": "pdf", "engine": "pdfplumber", "chars_per_page": 500}}
+        with patch.object(type(p), "_has_text_layer", return_value=True), \
+             patch.object(type(p), "_parse_with_pdfplumber", return_value=fake_result), \
+             patch.object(type(p), "_parse_with_docling", return_value=None), \
+             patch.dict(os.environ, {"NOVEL_PDF_ENGINE": "docling"}):
+            result = p.parse(path)
+        self.assertEqual(result["metadata"]["engine"], "pdfplumber")
+
+    def test_auto_upgrades_to_docling_on_low_yield(self):
+        p = self._parser()
+        path = self._fake_pdf()
+        low = {"title": "t", "chapters": [], "metadata": {"format": "pdf", "engine": "pdfplumber", "chars_per_page": 30}}
+        good = {"title": "t", "chapters": [{"title": "全文", "text": "y" * 500}],
+                "metadata": {"format": "pdf", "engine": "docling"}}
+        with patch.object(type(p), "_has_text_layer", return_value=True), \
+             patch.object(type(p), "_parse_with_pdfplumber", return_value=low), \
+             patch.object(type(p), "_parse_with_docling", return_value=good) as m_doc, \
+             patch.dict(os.environ, {"NOVEL_PDF_ENGINE": "auto"}):
+            result = p.parse(path)
+        m_doc.assert_called_once()
+        self.assertEqual(result["metadata"]["engine"], "docling")
+
+
 class TestBookRegistry(unittest.TestCase):
     """书籍注册表：零登记多书支持（core/books.py）"""
 
