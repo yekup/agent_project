@@ -170,23 +170,26 @@ async def health():
     }
 
 
-# ── 页面路由 ────────────────────────────────────────────────────────
-@app.get("/")
-async def index(request: Request):
-    return render_template("dashboard.html", request=request)
+# ── 页面路由（Vue SPA 构建产物）──────────────────────────────────
+# 前端已重做前后端分离 SPA（frontend/，Vite 构建到 frontend/dist）。
+# 未命中的非 API 路径回退 index.html，由 vue-router 接管（刷新前端路由不 404）。
+# 旧 Jinja 模板（web/templates/）在验收通过前保留作参照，不再挂载路由。
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
-@app.get("/graph")
-async def graph_page(request: Request):
-    return render_template("graph.html", request=request)
+_SPA_DIST = os.path.join(os.path.dirname(BASE_DIR), "frontend", "dist")
 
-@app.get("/chat")
-async def chat_page(request: Request):
-    return render_template("chat.html", request=request)
 
-@app.get("/upload")
-async def upload_page(request: Request):
-    return render_template("upload.html", request=request)
+class SPAStaticFiles(StaticFiles):
+    async def get_response(self, path, scope):
+        try:
+            return await super().get_response(path, scope)
+        except StarletteHTTPException as exc:
+            if exc.status_code == 404:
+                return await super().get_response("index.html", scope)
+            raise
 
-@app.get("/login")
-async def login_page(request: Request):
-    return render_template("login.html", request=request)
+
+if os.path.isdir(_SPA_DIST):
+    app.mount("/", SPAStaticFiles(directory=_SPA_DIST, html=True), name="spa")
+else:
+    logger.warning(f"SPA 构建产物不存在: {_SPA_DIST}（请先在 frontend/ 执行 npm run build）")

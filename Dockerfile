@@ -1,3 +1,12 @@
+# ── 前端构建阶段（Vue3 SPA → frontend/dist）─────────────────────
+FROM node:20-alpine AS frontend
+WORKDIR /build
+COPY frontend/package.json frontend/package-lock.json ./
+RUN npm ci
+COPY frontend/ ./
+RUN npm run build
+
+# ── 运行时阶段 ──────────────────────────────────────────────────
 FROM python:3.11-slim
 
 WORKDIR /app
@@ -13,6 +22,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # 项目代码
 COPY . .
+# 前端构建产物（覆盖 COPY . . 带入的旧 dist，以构建阶段为准）
+COPY --from=frontend /build/dist /app/frontend/dist
 
 # 数据目录（应用以 novel_project 为工作目录运行，数据读写均在其下）
 RUN mkdir -p novel_project/data/raw novel_project/data/processed \

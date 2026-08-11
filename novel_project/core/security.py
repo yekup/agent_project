@@ -162,8 +162,8 @@ class PermissionMiddleware(BaseHTTPMiddleware):
         "/health", "/docs", "/openapi.json",
         "/api/auth/login", "/api/auth/register", "/api/auth/me",
     })
-    # 前缀匹配的公开路径：静态资源
-    DEFAULT_PUBLIC_PREFIXES = ("/static/",)
+    # 前缀匹配的公开路径：静态资源（/assets/ 为 Vue SPA 构建产物目录）
+    DEFAULT_PUBLIC_PREFIXES = ("/static/", "/assets/")
 
     def __init__(self, app, public_paths: list[str] | None = None,
                  public_prefixes: tuple[str, ...] | None = None):

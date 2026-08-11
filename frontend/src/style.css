@@ -1,0 +1,18 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+body {
+  @apply bg-paper text-ink font-sans antialiased;
+}
+
+/* 报告正文的长文阅读排版微调 */
+.prose-report {
+  @apply prose prose-neutral max-w-none leading-relaxed;
+}
+.prose-report h1, .prose-report h2, .prose-report h3, .prose-report h4 {
+  @apply text-ink font-semibold;
+}
+.prose-report a {
+  @apply text-accent no-underline hover:underline;
+}
