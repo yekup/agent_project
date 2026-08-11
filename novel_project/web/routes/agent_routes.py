@@ -427,28 +427,30 @@ async def get_chapter(keyword: str = "", novel: str = "绍宋"):
 
     _safe_name(novel)
     # ── 定位小说 JSON 文件 ──
+    # 用统一的 _novel_json_path 解析（按书名核心词 glob，兼容「《绍宋》作者：xx.json」
+    # 这种带书名号/分隔符的文件名）。历史上的 glob "*{novel}*" 在 novel 为 wiki 全名
+    # （"绍宋作者：榴弹怕水"）时永远匹配不到——文件名里有"》"隔着，引用点击因此查不到原文。
     import glob
 
-    # 清理关键词用于匹配
+    # 清理关键词用于匹配（去掉引用前缀和书名号）
     kw_raw = keyword.replace("引自 ", "").replace("引自", "").replace("出自 ", "").replace("出自", "")
-    kw_raw = kw_raw.strip()
+    kw_raw = kw_raw.strip().strip("《》")
 
-    # 候选路径：优先 novel_project/data/processed/
     candidates = []
-    for base in ["novel_project/data/processed", "data/processed"]:
-        if os.path.exists(base):
-            candidates.extend(glob.glob(os.path.join(base, f"*{novel}*.json")))
-            # 去掉 _chunks.json 只取主文件
-            candidates = [p for p in candidates if not p.endswith("_chunks.json") and not p.endswith("_chunks.json")]
+    primary = _novel_json_path(novel)
+    if os.path.exists(primary):
+        candidates.append(primary)
+    # 兜底：按清理后的书名核心词全局搜索
+    if not candidates:
+        core = novel.split("作者：")[0].strip().strip("《》")
+        for base in ["novel_project/data/processed", "data/processed"]:
+            if os.path.exists(base):
+                candidates.extend(
+                    p for p in glob.glob(os.path.join(base, f"*{core}*.json"))
+                    if not p.endswith("_chunks.json")
+                )
     if not candidates:
         candidates = sorted(glob.glob("**/*绍宋*.json", recursive=True))
-    if not candidates:
-        # 全局搜索
-        for base in ["novel_project/data/processed", "data/processed"]:
-            for f in ["《绍宋》作者：榴弹怕水.json", "绍宋.json", "shaosong.json"]:
-                p = os.path.join(base, f)
-                if os.path.exists(p):
-                    candidates.append(p)
 
     novel_data = None
     for p in candidates:

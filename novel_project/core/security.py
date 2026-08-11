@@ -158,7 +158,7 @@ class PermissionMiddleware(BaseHTTPMiddleware):
 
     # 精确匹配的公开路径：页面 HTML 与认证接口
     DEFAULT_PUBLIC_PATHS = frozenset({
-        "/", "/login", "/graph", "/chat", "/upload",
+        "/", "/login", "/graph", "/chat", "/upload", "/search",
         "/health", "/docs", "/openapi.json",
         "/api/auth/login", "/api/auth/register", "/api/auth/me",
     })

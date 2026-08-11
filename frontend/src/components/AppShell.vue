@@ -57,6 +57,7 @@ const NAV = [
   { to: '/', label: '书架总览', icon: '📚', perm: '' },
   { to: '/chat', label: '智能问答', icon: '💬', perm: '' },
   { to: '/graph', label: '人物图谱', icon: '🕸', perm: '' },
+  { to: '/search', label: '跨书检索', icon: '🔎', perm: '' },
   { to: '/upload', label: '上传编译', icon: '⬆️', perm: 'page:upload' },
 ]
 
