@@ -482,18 +482,10 @@ class NovelChunker:
 # 向量库集成
 # ═════════════════════════════════════════════════════════════════════
 
-# 向量库 metadata 的 novel_key 使用短名（历史数据如此），
-# 而代码内各处通行的是 wiki 文件全名，这里做双向映射。
-NOVEL_KEY_TO_SHORT = {
-    "绍宋作者：榴弹怕水": "shaosong",
-    "斗破苍穹作者：天蚕土豆": "doupo",
-    "神印王座作者：唐家三少": "shenyin",
-}
-NOVEL_SHORT_TO_FULLNAME = {  # 短名 → data/processed/ 下的 JSON 文件名
-    "shaosong": "《绍宋》作者：榴弹怕水",
-    "doupo": "《斗破苍穹》作者：天蚕土豆",
-    "shenyin": "《神印王座》作者：唐家三少",
-}
+# 向量库 metadata 的 novel_key 解析已收口到 core.books（零登记注册表）。
+# NOVEL_KEY_TO_SHORT 保留为兼容别名（retriever 等旧引用），
+# 新代码请直接用 core.books.vector_key_for()。
+from core.books import LEGACY_VECTOR_KEYS as NOVEL_KEY_TO_SHORT
 
 
 class VectorStoreIndexer:

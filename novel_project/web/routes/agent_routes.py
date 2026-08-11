@@ -28,15 +28,9 @@ def _graph_path(novel: str) -> str:
 
 
 def _novel_json_path(novel: str) -> str:
-    """由 wiki 名解析原文 JSON 路径（《书名》作者：xx.json；glob 兜底）"""
-    import glob
-    core = novel.split("作者：")[0].strip().strip("《》")
-    base = os.path.join(BASE_DIR, "data", "processed")
-    for p in sorted(glob.glob(os.path.join(base, f"*{core}*.json"))):
-        if not p.endswith("_chunks.json"):
-            return p
-    # 找不到时返回约定路径（调用方负责检查存在性）
-    return os.path.join(base, f"{novel}.json")
+    """由 wiki 名/短名解析原文 JSON 路径（委托 core.books 注册表）"""
+    from core.books import processed_json_for
+    return processed_json_for(novel)
 
 
 def _resolve_novel(novel: str = "") -> str:
@@ -372,43 +366,17 @@ async def ask_agent_auto(body: AgentQueryRequest):
 
 @router.get("/novels")
 async def list_novels():
-    """列出已有图谱/编译数据的书籍"""
-    import glob
-    # 同时检查 _graph.json 和 _hierarchical.json
-    all_names = set()
-
-    for gf in glob.glob("data/wiki/*_graph.json"):
-        name = os.path.basename(gf).replace("_graph.json", "")
-        if name != "test":
-            all_names.add(name)
-
-    for hf in glob.glob("data/wiki/*_hierarchical.json"):
-        name = os.path.basename(hf).replace("_hierarchical.json", "")
-        if name != "test":
-            all_names.add(name)
-
-    # 显示名称映射
-    display_names = {
-        "shaosong": "绍宋",
-        "绍宋": "绍宋",
-        "斗破苍穹": "斗破苍穹",
-        "神印王座": "神印王座",
-    }
-
-    novels = []
-    for name in sorted(all_names):
-        graph_path = f"data/wiki/{name}_graph.json"
-        wiki_path = f"data/wiki/{name}_hierarchical.json"
-        # 去掉"作者：xxx"后缀，提取核心名
-        clean_name = name.replace("作者：", " ").strip().split(" ")[0] if "作者：" in name else name
-        display = display_names.get(clean_name) or display_names.get(name) or name
-        novels.append({
-            "name": name,
-            "display_name": display,
-            "has_graph": os.path.exists(graph_path),
-            "has_wiki": os.path.exists(wiki_path),
-        })
-    return novels
+    """列出已编译书籍（core.books 注册表自动发现，新书零登记）"""
+    from core.books import list_books
+    return [
+        {
+            "name": b.name,
+            "display_name": b.display_name,
+            "has_graph": b.has_graph,
+            "has_wiki": b.has_wiki,
+        }
+        for b in list_books()
+    ]
 
 
 @router.get("/chapter")
@@ -792,11 +760,10 @@ async def index_novel(data: dict, request: Request = None):
     """
     novel = data.get("novel", "shaosong")
     _safe_name(novel)
-    import glob
 
-    from core.chunker import NOVEL_SHORT_TO_FULLNAME
-    name = NOVEL_SHORT_TO_FULLNAME.get(novel, novel)
-    filepath = f"data/processed/{name}.json"
+    # 路径与索引 key 统一走书籍注册表（全名/短名入参均可，新书零登记）
+    from core.books import processed_json_for, resolve_name, vector_key_for
+    filepath = processed_json_for(novel)
 
     if not os.path.exists(filepath):
         return {"status": "error", "message": f"文件不存在: {filepath}"}
@@ -805,11 +772,13 @@ async def index_novel(data: dict, request: Request = None):
         novel_data = json.load(f)
 
     from core.chunker import NovelChunker, VectorStoreIndexer
+    # 索引 key 与检索侧经同一函数解析，避免传全名时与历史短名索引错位
+    key = vector_key_for(resolve_name(novel))
     chunker = NovelChunker(chunk_size=512, overlap=128)
-    chunks = chunker.chunk_novel(novel_data, novel_key=novel)
+    chunks = chunker.chunk_novel(novel_data, novel_key=key)
 
     indexer = VectorStoreIndexer()
-    result = indexer.index_novel(novel, chunks)
+    result = indexer.index_novel(key, chunks)
 
     return {
         "status": "ok" if result.get("status") == "ok" else "partial",
@@ -1202,11 +1171,9 @@ async def retry_chapter(data: dict):
         raise HTTPException(status_code=400, detail="参数缺失")
     _safe_name(novel)
 
-    # 加载数据
-    from core.chunker import NOVEL_SHORT_TO_FULLNAME
-    name = NOVEL_SHORT_TO_FULLNAME.get(novel, novel)
-    import glob
-    processed_path = f"data/processed/{name}.json"
+    # 加载数据（路径解析走书籍注册表，兼容全名/短名/书名号）
+    from core.books import processed_json_for
+    processed_path = processed_json_for(novel)
     if not os.path.exists(processed_path):
         raise HTTPException(status_code=404, detail="数据文件不存在")
 

@@ -1576,6 +1576,51 @@ class TestMaterialPoolDeferredCompress(unittest.TestCase):
         self.assertEqual(len(pool._rounds), 2)
 
 
+class TestBookRegistry(unittest.TestCase):
+    """书籍注册表：零登记多书支持（core/books.py）"""
+
+    def test_display_name_derivation(self):
+        from core.books import display_name_for
+        self.assertEqual(display_name_for("绍宋作者：榴弹怕水"), "绍宋")
+        self.assertEqual(display_name_for("《斗破苍穹》作者：天蚕土豆"), "斗破苍穹")
+        self.assertEqual(display_name_for("神印王座作者：唐家三少"), "神印王座")
+        self.assertEqual(display_name_for("诡秘之主"), "诡秘之主")  # 无作者后缀的新书
+
+    def test_vector_key_legacy_and_fallback(self):
+        from core.books import vector_key_for
+        # 历史三书保持短名（兼容已建索引）
+        self.assertEqual(vector_key_for("绍宋作者：榴弹怕水"), "shaosong")
+        self.assertEqual(vector_key_for("斗破苍穹作者：天蚕土豆"), "doupo")
+        # 新书回退全名：索引与检索走同一函数，两侧天然一致
+        self.assertEqual(vector_key_for("新书作者：某某"), "新书作者：某某")
+
+    def test_resolve_name(self):
+        from core.books import resolve_name
+        self.assertEqual(resolve_name("shaosong"), "绍宋作者：榴弹怕水")
+        self.assertEqual(resolve_name("新书作者：某某"), "新书作者：某某")
+
+    def test_list_books_discovers_without_registration(self):
+        """未登记的新书（只有编译产物文件）应自动出现在列表中"""
+        import tempfile
+        from core.books import list_books
+        with tempfile.TemporaryDirectory() as d:
+            for fname in ["新书甲作者：A_graph.json", "新书甲作者：A_hierarchical.json",
+                          "新书乙_hierarchical.json", "test_graph.json"]:
+                open(os.path.join(d, fname), "w", encoding="utf-8").write("{}")
+            books = list_books(wiki_dir=d)
+        names = [b.name for b in books]
+        self.assertIn("新书甲作者：A", names)
+        self.assertIn("新书乙", names)
+        self.assertNotIn("test", names)  # test 数据排除
+        book_a = next(b for b in books if b.name == "新书甲作者：A")
+        self.assertEqual(book_a.display_name, "新书甲")
+        self.assertEqual(book_a.vector_key, "新书甲作者：A")  # 未登记 → 回退全名
+        self.assertTrue(book_a.has_graph and book_a.has_wiki)
+        book_b = next(b for b in books if b.name == "新书乙")
+        self.assertFalse(book_b.has_graph)
+        self.assertTrue(book_b.has_wiki)
+
+
 class TestSearchAllCompleteness(unittest.TestCase):
     """_search_all 必须覆盖图谱（含 PPR 的 _search_graph）与向量腿——
     回归点：历史上的内联图谱版没有 PPR，"全量搜索"反而弱于单项图谱搜索"""
