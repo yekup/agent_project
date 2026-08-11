@@ -364,7 +364,25 @@ async function sendMessage() {
             const parsed = JSON.parse(data);
             if (parsed.event === 'progress') {
               showProgress(true, parsed.message || '处理中...');
+            } else if (parsed.event === 'draft_start') {
+              // 新一轮草稿开始（可能发生在审核未通过后的重写），清空重攒
+              fullText = '';
+            } else if (parsed.event === 'token') {
+              // 草稿逐 token 渲染（节流到 150ms，避免每个 token 都全量渲染 Markdown）
+              fullText += parsed.text || '';
+              const msgs0 = getCurrentSession().messages;
+              if (msgs0.length && msgs0[msgs0.length-1].role === 'assistant') {
+                msgs0[msgs0.length-1].text = fullText;
+              }
+              scheduleStreamRender();
+            } else if (parsed.event === 'error') {
+              const msgs1 = getCurrentSession().messages;
+              if (msgs1.length && msgs1[msgs1.length-1].role === 'assistant') {
+                msgs1[msgs1.length-1].text = '分析失败: ' + (parsed.message || '未知错误');
+                renderMessages(msgs1);
+              }
             } else if (parsed.event === 'result') {
+              // 以最终校验后的报告为准（引用校验可能修改流式草稿）
               fullText = parsed.report || '';
               const sources = [];
               const srcMatch = fullText.match(/「[^」]+」/g);
@@ -400,6 +418,18 @@ function showProgress(show, text) {
   document.getElementById('progressText').classList.toggle('hidden', !show);
   if (text) document.getElementById('progressText').textContent = text;
   document.getElementById('sendBtn').disabled = show;
+}
+
+// 流式渲染节流：150ms 内积累的 token 合并成一次渲染
+let _streamRenderTimer = null;
+function scheduleStreamRender() {
+  if (_streamRenderTimer) return;
+  _streamRenderTimer = setTimeout(() => {
+    _streamRenderTimer = null;
+    renderMessages(getCurrentSession().messages);
+    const el = document.getElementById('chatMessages');
+    el.scrollTop = el.scrollHeight;
+  }, 150);
 }
 
 function quickQuestion(q) {

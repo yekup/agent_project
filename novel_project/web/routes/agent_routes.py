@@ -242,37 +242,53 @@ async def ask_agent(body: AgentQueryRequest, background_tasks: BackgroundTasks =
 
 @router.post("/ask/stream")
 async def ask_agent_stream(body: AgentQueryRequest):
-    """SSE 流式 Agent 分析（带进度事件）"""
+    """SSE 流式 Agent 分析（真流式：进度事件 + 报告草稿逐 token 推送）"""
     from core.agents.researcher import Researcher
     from core.agents.writer import Writer
     from core.agents.reviewer import Reviewer
     from core.agents.coordinator import Coordinator
     from fastapi.responses import StreamingResponse
+    import asyncio
 
     novel = _resolve_novel(body.novel)
 
     async def event_stream():
-        yield f"data: {json.dumps({'event': 'start', 'message': '开始分析...'})}\n\n"
-        retriever = await run_in_threadpool(_get_retriever, novel)
-        researcher = Researcher(retriever)
-        writer = Writer()
-        reviewer = Reviewer()
-        coordinator = Coordinator(researcher, writer, reviewer)
+        loop = asyncio.get_running_loop()
+        que: asyncio.Queue = asyncio.Queue()
 
-        # 包装 coordinator.run 来发送进度事件
-        # 简单方案：先发进度，再返回结果
-        yield f"data: {json.dumps({'event': 'progress', 'message': '意图识别中...'})}\n\n"
-        intent = await run_in_threadpool(coordinator.detect_intent, body.query)
+        def cb(ev):
+            # 图在工作线程中执行，事件经 loop 线程安全地转入 async 队列
+            loop.call_soon_threadsafe(que.put_nowait, ev)
 
-        yield f"data: {json.dumps({'event': 'progress', 'message': f'任务拆解中...（{intent}）'})}\n\n"
-        steps = await run_in_threadpool(coordinator.decompose_task, body.query, intent)
+        async def work():
+            try:
+                retriever = await run_in_threadpool(_get_retriever, novel)
+                coordinator = Coordinator(Researcher(retriever), Writer(), Reviewer())
+                result = await run_in_threadpool(
+                    coordinator.run, body.query, event_cb=cb)
+                cb({"event": "result",
+                    "report": result.get("final_report", ""),
+                    "rounds": result.get("rounds", 0),
+                    "intent": result.get("intent", ""),
+                    "review": result.get("review_result", {})})
+            except Exception as e:
+                logger.exception("流式问答失败")
+                cb({"event": "error", "message": str(e)})
+            finally:
+                cb(None)  # 结束哨兵
 
-        yield f"data: {json.dumps({'event': 'progress', 'message': f'共 {len(steps)} 个检索步骤，执行中...'})}\n\n"
-        # 传入预算好的 intent/steps，coordinator 内部对应节点会跳过，避免重复 LLM 调用
-        result = await run_in_threadpool(coordinator.run, body.query, intent=intent, steps=steps)
-
-        yield f"data: {json.dumps({'event': 'result', 'report': result.get('final_report', ''), 'rounds': result.get('rounds', 0), 'intent': result.get('intent', '')})}\n\n"
-        yield "data: [DONE]\n\n"
+        task = asyncio.create_task(work())
+        try:
+            yield f"data: {json.dumps({'event': 'start', 'message': '开始分析...'}, ensure_ascii=False)}\n\n"
+            while True:
+                ev = await que.get()
+                if ev is None:
+                    break
+                yield f"data: {json.dumps(ev, ensure_ascii=False)}\n\n"
+            yield "data: [DONE]\n\n"
+        finally:
+            if not task.done():
+                task.cancel()
 
     return StreamingResponse(event_stream(), media_type="text/event-stream")
 

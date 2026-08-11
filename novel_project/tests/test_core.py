@@ -1542,5 +1542,84 @@ class TestIrrelevantFailureHandling(unittest.TestCase):
         self.assertTrue(any("扣题重写" in d for d in descs))
 
 
+class TestWriterStreaming(unittest.TestCase):
+    """Writer 流式生成：stream_cb 逐 token 回调，返回值仍是完整校验后文本"""
+
+    def test_stream_cb_receives_tokens_and_full_text_returned(self):
+        from core.agents.writer import Writer
+        tokens = []
+
+        def fake_stream(messages, **kw):
+            yield from ["赵玖", "与岳飞", "是君臣关系"]
+
+        with patch("core.agents.writer.call_llm_stream", side_effect=fake_stream), \
+             patch("core.agents.writer._resolve_provider", return_value=("k", None, "m")):
+            report = Writer().write(
+                "赵玖和岳飞的关系", "relationship",
+                [{"step": 1, "description": "检索", "result": "无章节标题的材料"}],
+                stream_cb=tokens.append)
+
+        self.assertEqual(tokens, ["赵玖", "与岳飞", "是君臣关系"])
+        self.assertEqual(report, "赵玖与岳飞是君臣关系")
+
+    def test_no_key_falls_back_to_call_llm(self):
+        """未配置 key 时不走流式（call_llm_stream 会 yield 回退文案污染报告）"""
+        from core.agents.writer import Writer
+        with patch("core.agents.writer._resolve_provider", return_value=("", None, "m")), \
+             patch("core.agents.writer.call_llm", return_value="普通报告") as m_llm, \
+             patch("core.agents.writer.call_llm_stream") as m_stream:
+            report = Writer().write("q", "other",
+                                    [{"step": 1, "description": "d", "result": "x"}],
+                                    stream_cb=lambda t: None)
+        self.assertTrue(m_llm.called)
+        self.assertFalse(m_stream.called)
+        self.assertEqual(report, "普通报告")
+
+    def test_stream_failure_marker_returns_unavailable_message(self):
+        """流式路径产出失败标记 → 与非流式 None 语义一致"""
+        from core.agents.writer import Writer
+        with patch("core.agents.writer.call_llm_stream",
+                   side_effect=lambda m, **kw: iter(["[LLM 调用失败: boom"])), \
+             patch("core.agents.writer._resolve_provider", return_value=("k", None, "m")):
+            report = Writer().write("q", "other",
+                                    [{"step": 1, "description": "d", "result": "x"}],
+                                    stream_cb=lambda t: None)
+        self.assertIn("暂时不可用", report)
+
+
+class TestCoordinatorEvents(unittest.TestCase):
+    """Coordinator event_cb：图节点推送 progress 事件；无 stream_cb 的替身不报错"""
+
+    def _make_coordinator(self):
+        from core.agents.coordinator import Coordinator
+
+        class FakeResearcher:
+            def execute(self, desc, query, intent):
+                return "材料"
+
+        class FakeWriter:
+            def write(self, query, intent, materials):  # 无 stream_cb 参数
+                return "最终报告"
+
+        class FakeReviewer:
+            def review(self, draft, query, research_materials=""):
+                return {"passed": True, "score": 9, "feedback": "", "failure_type": ""}
+
+        return Coordinator(FakeResearcher(), FakeWriter(), FakeReviewer())
+
+    def test_events_emitted(self):
+        events = []
+        coordinator = self._make_coordinator()
+        steps = [{"step": 1, "description": "搜索赵玖的信息"}]
+        result = coordinator.run("赵玖是怎样的人", intent="character",
+                                 steps=steps, event_cb=events.append)
+        kinds = [e["event"] for e in events]
+        self.assertIn("progress", kinds)
+        self.assertEqual(result["final_report"], "最终报告")
+        # 替身 Writer 无 stream_cb → 不应推送 token/draft_start 事件
+        self.assertNotIn("token", kinds)
+        self.assertNotIn("draft_start", kinds)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

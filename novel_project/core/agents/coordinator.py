@@ -99,6 +99,16 @@ class CoordinatorState(TypedDict):
 # ── 图节点 ──────────────────────────────────────────────────────────
 
 
+def _emit(coordinator, event: dict) -> None:
+    """向调用方推送进度/流式事件（未设置 event_cb 时零开销）"""
+    cb = getattr(coordinator, "_event_cb", None)
+    if cb:
+        try:
+            cb(event)
+        except Exception:
+            pass  # 事件推送（如 SSE 断开）不应影响主流程
+
+
 def _node_detect_intent(state: CoordinatorState, coordinator) -> dict:
     """节点: 意图识别（调用方已预算时跳过，避免重复 LLM 调用）"""
     if state.get("intent"):
@@ -111,6 +121,7 @@ def _node_detect_intent(state: CoordinatorState, coordinator) -> dict:
     if intent not in ["character", "relationship", "summary", "complex", "other"]:
         intent = "other"
     logger.info(f"  [Coordinator] 意图识别: {intent}")
+    _emit(coordinator, {"event": "progress", "message": f"意图识别: {intent}"})
     return {"intent": intent}
 
 
@@ -131,29 +142,42 @@ def _node_decompose(state: CoordinatorState, coordinator) -> dict:
     for i, s in enumerate(steps):
         if "step" not in s:
             s["step"] = i + 1
+    _emit(coordinator, {"event": "progress", "message": f"任务拆解: {len(steps)} 个检索步骤"})
     return {"steps": steps, "round_num": 0, "completed_steps": [],
             "_all_materials": [], "done": False}
 
 
 def _node_research(state: CoordinatorState, coordinator) -> dict:
-    """节点: 执行未完成的检索步骤"""
-    round_num = state["round_num"]
+    """节点: 执行未完成的检索步骤（多步骤并行）"""
     steps = state["steps"]
     completed = state["completed_steps"]
     all_materials = state.get("_all_materials", [])
     completed_ids = {s["step"] for s in completed}
 
-    round_materials = []
-    for step in steps:
-        if step["step"] in completed_ids:
-            continue
+    pending = [s for s in steps if s["step"] not in completed_ids]
+
+    def _run(step):
         desc = step["description"]
         logger.info(f"  [Coordinator] 分配任务: {desc}")
-        result = coordinator.researcher.execute(desc, state["query"], state["intent"])
-        round_materials.append({"step": step["step"], "description": desc, "result": result})
-        completed.append(step)
-        completed_ids.add(step["step"])
+        _emit(coordinator, {"event": "progress", "message": f"检索中: {desc[:40]}"})
+        try:
+            result = coordinator.researcher.execute(desc, state["query"], state["intent"])
+        except Exception as e:
+            # 单步失败不拖垮整轮——其余步骤的材料照常汇总
+            logger.warning(f"  [Coordinator] 检索步骤失败（继续其余步骤）: {desc}: {e}")
+            result = f"检索步骤执行失败: {e}"
+        return {"step": step["step"], "description": desc, "result": result}
 
+    if len(pending) <= 1:
+        round_materials = [_run(s) for s in pending]
+    else:
+        # 检索步骤之间无依赖，且 LLM 实体抽取 / 向量 / 图谱检索都是 IO 密集，
+        # 并行后整轮耗时 ≈ 最慢的一步而非各步之和
+        from concurrent.futures import ThreadPoolExecutor
+        with ThreadPoolExecutor(max_workers=min(4, len(pending))) as pool:
+            round_materials = list(pool.map(_run, pending))
+
+    completed.extend(pending)
     all_materials.extend(round_materials)
     coordinator._pool.add_round(round_materials)
 
@@ -165,10 +189,22 @@ def _node_research(state: CoordinatorState, coordinator) -> dict:
 
 
 def _node_write(state: CoordinatorState, coordinator) -> dict:
-    """节点: 生成报告"""
+    """节点: 生成报告（有 event_cb 时流式推送草稿 token）"""
     effective = state.get("_materials_text") or coordinator._pool.get_effective()
     materials = [{"step": 0, "description": "汇总资料", "result": effective}]
-    draft = coordinator.writer.write(state["query"], state["intent"], materials)
+    _emit(coordinator, {"event": "progress", "message": "撰写报告中..."})
+
+    # 流式回调仅当 Writer 实现支持时传入（兼容测试中注入的简化替身）
+    import inspect
+    write_kwargs = {}
+    if "stream_cb" in inspect.signature(coordinator.writer.write).parameters \
+            and getattr(coordinator, "_event_cb", None):
+        _emit(coordinator, {"event": "draft_start"})
+        write_kwargs["stream_cb"] = \
+            lambda tok: _emit(coordinator, {"event": "token", "text": tok})
+
+    draft = coordinator.writer.write(
+        state["query"], state["intent"], materials, **write_kwargs)
     # 用与 Writer 内部校验完全相同的逻辑提取来源名单，交给 Reviewer 核对引用，
     # 避免 Reviewer 只能看到截断材料而误判 fake_citation。
     # _extract_chapter_sources 是 Writer 的静态方法，直接走类调用（兼容注入的替身）
@@ -202,6 +238,9 @@ def _node_review(state: CoordinatorState, coordinator) -> dict:
         sections.append("【检索到的原文片段】\n" + body)
     research_text = "\n\n".join(sections)[:8000]
     review = coordinator.reviewer.review(draft, query, research_materials=research_text)
+    _emit(coordinator, {"event": "progress",
+                        "message": f"审核: {review.get('score', 0)}/10 "
+                                   f"{'通过' if review.get('passed') else '未通过，准备修订'}"})
 
     # 审计日志
     review_status = "failure" if not review["passed"] else "success"
@@ -351,7 +390,7 @@ class Coordinator:
 
     # ── 主入口 ───────────────────────────────────────────────────────
 
-    def run(self, query, max_rounds=5, intent=None, steps=None):
+    def run(self, query, max_rounds=5, intent=None, steps=None, event_cb=None):
         """
         完整流程：意图识别 → 任务分解 → 多轮执行 → 汇总输出
 
@@ -360,6 +399,8 @@ class Coordinator:
             max_rounds: 最多执行轮数
             intent: 可选，调用方预算好的意图（跳过 detect_intent 节点内的 LLM 调用）
             steps: 可选，调用方预算好的检索步骤（跳过 decompose 节点内的 LLM 调用）
+            event_cb: 可选，事件回调 fn(dict)。图节点通过它推送
+                progress / draft_start / token 等事件（SSE 流式用）
 
         返回:
             dict: {query, intent, steps, final_report, review_result, rounds}
@@ -367,6 +408,7 @@ class Coordinator:
         logger.info(f"\n [Coordinator] 收到问题：{query}")
 
         self._pool = MaterialPool(llm_compress=True, max_rounds=3)
+        self._event_cb = event_cb
 
         if self._graph is None:
             self._graph = self._build_graph()

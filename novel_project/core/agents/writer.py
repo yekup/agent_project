@@ -17,7 +17,7 @@ import sys
 
 logger = logging.getLogger(__name__)
 
-from core.llm import call_llm
+from core.llm import call_llm, call_llm_stream, _resolve_provider
 
 # 可用章节来源 ≥ 该值时启用章节引用模式；否则无引用模式
 MIN_CHAPTER_SOURCES_FOR_CITATION = 3
@@ -72,7 +72,7 @@ WRITER_PROMPT = """你是一个网文分析专家。请根据 Researcher 提供�
 class Writer:
     """撰稿人：基于检索资料撰写分析报告"""
 
-    def write(self, query, intent, materials):
+    def write(self, query, intent, materials, stream_cb=None):
         """
         生成分析报告，自动校验引用真实性。
 
@@ -85,6 +85,9 @@ class Writer:
             intent: 意图类型
             materials: Researcher 收集的资料列表
                 [{step, description, result}, ...]
+            stream_cb: 可选，流式回调 fn(token)。传入后 LLM 生成改为
+                逐 token 流式（前端可实时渲染草稿）；最终返回值仍是
+                经过引用校验的完整文本，以返回值为准
 
         返回:
             str: 分析报告文本
@@ -109,7 +112,7 @@ class Writer:
                 materials=all_materials,
                 available_sources=sources_text,
             )
-            report = call_llm([{"role": "user", "content": prompt}])
+            report = self._generate(prompt, stream_cb)
             if not report:
                 return "（LLM 服务暂时不可用，无法生成报告。请检查 API 配置后重试。）"
             report = self._validate_citations(report, available_sources)
@@ -120,7 +123,7 @@ class Writer:
                 intent=intent,
                 materials=all_materials,
             )
-            report = call_llm([{"role": "user", "content": prompt}])
+            report = self._generate(prompt, stream_cb)
             if not report:
                 return "（LLM 服务暂时不可用，无法生成报告。请检查 API 配置后重试。）"
             # 清理可能残留的引用标记（三种括号形态统一清除）
@@ -132,6 +135,33 @@ class Writer:
         return report
 
     # ── 来源提取 ──────────────────────────────────────────────────────
+
+    @staticmethod
+    def _generate(prompt: str, stream_cb=None) -> str | None:
+        """
+        调用 LLM 生成文本。
+
+        stream_cb 为 None 或未配置 API Key 时走普通 call_llm；
+        否则用 call_llm_stream 逐 token 回调，同时拼出完整文本返回。
+        流式失败（异常标记/空内容）返回 None，与非流式路径语义一致。
+        """
+        messages = [{"role": "user", "content": prompt}]
+        api_key, _, _ = _resolve_provider()
+        if stream_cb is None or not api_key:
+            return call_llm(messages)
+
+        chunks = []
+        for token in call_llm_stream(messages):
+            chunks.append(token)
+            try:
+                stream_cb(token)
+            except Exception:
+                pass  # 回调（如 SSE 推送）失败不应中断生成
+        text = "".join(chunks).strip()
+        # call_llm_stream 的失败形式：异常标记或回退提示文案
+        if not text or text.startswith("[LLM 调用失败"):
+            return None
+        return text
 
     @staticmethod
     def _extract_chapter_sources(materials: list[dict]) -> list[str]:
