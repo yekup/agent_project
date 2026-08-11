@@ -20,6 +20,19 @@
           :class="editMode ? '!bg-accent-soft !text-accent !border-accent' : ''"
           @click="toggleEditMode"
         >{{ editMode ? '✓ 完成编辑' : '✏️ 编辑' }}</button>
+        <!-- 着色模式：阵营（社区）/ 角色，仅在有社区数据时显示 -->
+        <div v-if="communityList.length > 1" class="flex rounded-md border border-line overflow-hidden text-sm shrink-0">
+          <button
+            class="px-2.5 py-1.5 transition-colors"
+            :class="colorMode === 'community' ? 'bg-accent text-white' : 'bg-card text-ink-soft hover:bg-accent-soft'"
+            @click="setColorMode('community')"
+          >阵营</button>
+          <button
+            class="px-2.5 py-1.5 transition-colors"
+            :class="colorMode === 'role' ? 'bg-accent text-white' : 'bg-card text-ink-soft hover:bg-accent-soft'"
+            @click="setColorMode('role')"
+          >角色</button>
+        </div>
         <select
           v-model="roleFilter"
           class="px-2 py-1.5 rounded-md bg-card border border-line text-ink text-sm outline-none focus:border-accent transition-colors"
@@ -97,7 +110,14 @@
             <h3 class="text-lg font-semibold text-ink">{{ detail.name }}</h3>
             <button class="text-ink-faint hover:text-ink text-lg leading-none transition-colors" @click="closeDetail">×</button>
           </div>
-          <p class="text-ink-soft text-xs mt-0.5">角色: {{ detail.role }}</p>
+          <p class="text-ink-soft text-xs mt-0.5">角色: {{ detail.role }}
+            <template v-if="detail.comm >= 0">
+              · <span class="inline-flex items-center gap-1">
+                <span class="inline-block w-2 h-2 rounded-full" :style="{ background: _communityColors[detail.comm] || '#cfcdc8' }"></span>
+                阵营{{ detail.comm + 1 }}
+              </span>
+            </template>
+          </p>
           <p class="text-ink-soft text-xs mt-1">关联: {{ relAll.length }} 人 | 出场: {{ detail.mention }} 次</p>
         </div>
         <div class="shrink-0 px-4 pt-3 pb-1">
@@ -131,7 +151,24 @@
     <!-- 底部信息与图例 -->
     <div class="flex justify-between items-center mt-2 flex-wrap gap-2">
       <p class="text-sm text-ink-faint">{{ graphInfo }}</p>
-      <div class="flex gap-4 text-xs text-ink-faint">
+      <!-- 阵营图例：点击高亮对应阵营 -->
+      <div v-if="colorMode === 'community' && communityLegend.length" class="flex gap-3 text-xs text-ink-faint flex-wrap">
+        <button
+          v-for="c in communityLegend"
+          :key="c.id"
+          class="flex items-center hover:text-ink transition-colors"
+          :class="{ 'font-medium text-ink': communityFilter === String(c.id) }"
+          @click="highlightCommunity(c.id)"
+        >
+          <span class="inline-block w-3 h-3 rounded-full mr-1" :style="{ background: c.color }"></span>
+          阵营{{ c.id + 1 }}（{{ c.count }}人）
+        </button>
+        <span class="flex items-center">
+          <span class="inline-block w-3 h-3 rounded-full mr-1" :style="{ background: '#cfcdc8' }"></span>其他
+        </span>
+      </div>
+      <!-- 角色着色时显示关系图例 -->
+      <div v-else class="flex gap-4 text-xs text-ink-faint">
         <span><span class="inline-block w-3 h-3 rounded-full mr-1" style="background:#d95f4e"></span>敌对/冲突</span>
         <span><span class="inline-block w-3 h-3 rounded-full mr-1" style="background:#5b8dd9"></span>同盟/友好</span>
         <span><span class="inline-block w-3 h-3 rounded-full mr-1" style="background:#9b9a97"></span>从属/上下级</span>
@@ -275,6 +312,37 @@ function classifyRelation(t) {
 }
 const eColor = { hostile: '#d95f4e', friendly: '#5b8dd9', subordinate: '#9b9a97', other: '#2f6f4f' }
 const nFill = { '主角': '#d9a441', '配角': '#5b8dd9' }
+
+/* ── 阵营（社区）着色 ── */
+// 着色模式：'community' 按阵营（社区检测）| 'role' 按角色。cy 样式函数闭包读取
+// _colorMode/_communityColors，切换时 cy.style() 重应用即可，不用重跑布局
+let _colorMode = 'community'
+let _communityColors = {}   // {社区id: 颜色}（仅前 MAX_COMMUNITY_COLORS 个阵营有色，其余灰）
+const COMMUNITY_GRAY = '#cfcdc8'
+const MAX_COMMUNITY_COLORS = 10
+
+// 黄金角散布取色：相邻阵营色相尽量远离，白底上保持可读的中等饱和/明度
+function buildCommunityColors() {
+  const counts = {}
+  Object.values(_nodeToCommunity).forEach((c) => { counts[c] = (counts[c] || 0) + 1 })
+  const sorted = Object.keys(counts).map(Number).sort((a, b) => counts[b] - counts[a])
+  _communityColors = {}
+  sorted.slice(0, MAX_COMMUNITY_COLORS).forEach((cid, i) => {
+    _communityColors[cid] = `hsl(${Math.round((i * 137.5) % 360)}, 55%, 52%)`
+  })
+}
+
+function nodeColor(ele) {
+  if (_colorMode === 'community') return _communityColors[ele.data('comm')] || COMMUNITY_GRAY
+  return nFill[ele.data('role')] || '#9b9a97'
+}
+function edgeColor(ele) {
+  if (_colorMode === 'community') {
+    const c = ele.data('comm')
+    return (c >= 0 && _communityColors[c]) || '#e3e1dc'
+  }
+  return eColor[ele.data('relType')] || '#9b9a97'
+}
 function calcDeg(e) {
   const d = {}
   e.forEach((r) => { d[r.source] = (d[r.source] || 0) + 1; d[r.target] = (d[r.target] || 0) + 1 })
@@ -299,11 +367,15 @@ const graphInfo = ref('')
 const searchQuery = ref('')
 const roleFilter = ref('all')
 const communityFilter = ref('all')
+const colorMode = ref('community') // 默认按阵营着色（阵营划分一眼可见）
+// 图谱数据版本号：_nodeToCommunity/_communityColors 是非响应式模块变量，
+// computed（communityList/communityLegend）靠订阅它来感知数据加载完成
+const dataVersion = ref(0)
 const isolatedToggle = ref('connected')
 const effectiveNovel = ref('') // 实际请求所用的书籍名（空选择时回退到第一本）
 
 const REL_PAGE = 15
-const detail = reactive({ visible: false, name: '', role: '', mention: 0 })
+const detail = reactive({ visible: false, name: '', role: '', mention: 0, comm: -1 })
 const relAll = ref([])
 const relPage = ref(0)
 const relTotalPages = computed(() => Math.ceil(relAll.value.length / REL_PAGE))
@@ -324,10 +396,27 @@ const expRes = ref('2')
 const expLegend = ref(true)
 
 const communityList = computed(() => {
+  void dataVersion.value // 订阅数据版本，加载完成后重算
   const counts = {}
   Object.values(_nodeToCommunity).forEach((c) => { counts[c] = (counts[c] || 0) + 1 })
   return Object.keys(counts).map(Number).sort((a, b) => a - b).map((id) => ({ id, count: counts[id] }))
 })
+
+// 阵营图例：有颜色的前 N 个阵营（按人数降序），点击可高亮
+const communityLegend = computed(() => {
+  void dataVersion.value
+  return communityList.value
+    .filter((c) => _communityColors[c.id])
+    .sort((a, b) => b.count - a.count)
+    .slice(0, 6)
+    .map((c) => ({ ...c, color: _communityColors[c.id] }))
+})
+
+// 点击图例高亮阵营（再次点击取消）
+function highlightCommunity(cid) {
+  communityFilter.value = communityFilter.value === String(cid) ? 'all' : String(cid)
+  applyCommunityHighlight()
+}
 
 /* ── 数据加载 ── */
 async function loadGraph() {
@@ -355,6 +444,12 @@ async function loadGraph() {
     allEdges = d.edges || []
     _cfg = d.layout || {}
     _nodeToCommunity = (d.communities && d.communities.node_to_community) || {}
+    buildCommunityColors()
+    // 无社区数据的书（未跑过社区编译）退回角色着色
+    const hasComm = Object.keys(_nodeToCommunity).length > 0
+    _colorMode = hasComm ? 'community' : 'role'
+    colorMode.value = _colorMode
+    dataVersion.value++ // 通知 computed 社区数据已就绪
     graphInfo.value = `${allNodes.length} 角色, ${allEdges.length} 关系`
     _cfg.minDegree = _cfg.minDegree || Math.max(2, Math.min(5, Math.floor(allNodes.length * 0.005)))
     _cfg.edgeLimit = _cfg.edgeLimit || Math.min(300 + allNodes.length * 0.3, 600)
@@ -367,6 +462,48 @@ async function loadGraph() {
   } finally {
     loading.value = false
   }
+}
+
+/* ── Cytoscape 样式表（着色函数闭包读取 _colorMode，切换阵营/角色着色时重应用） ── */
+function makeStyle(mode) {
+  return [
+    { selector: 'node', style: {
+      label: 'data(label)',
+      'font-size': (ele) => Math.max(4, Math.min(11, ele.data('size') * 0.22)) + 'px',
+      color: '#37352f',
+      'text-valign': 'bottom',
+      'text-halign': 'center',
+      'text-margin-y': 1,
+      width: 'data(size)',
+      height: 'data(size)',
+      'border-width': (ele) => (ele.data('fl') === 0 ? 3 : (ele.data('deg') > 10 ? 2 : 1)),
+      'border-color': (ele) => (ele.data('fl') === 0 ? '#d9a441' : '#ffffff'),
+      'background-color': nodeColor,
+      'min-zoomed-font-size': 1,
+      'z-index': (ele) => -ele.data('size'),
+    } },
+    { selector: 'edge', style: {
+      width: (ele) => Math.max(0.1, Math.min(1, (ele.data('weight') || 1) * 0.12)),
+      'line-color': edgeColor,
+      opacity: (ele) => {
+        if (mode === 'focus' && ele.data('isIndirect')) return 0.01
+        // 阵营着色：同阵营边比跨阵营边更醒目
+        if (_colorMode === 'community') return ele.data('comm') >= 0 ? 0.22 : 0.05
+        return ele.data('isKey') ? 0.3 : 0.03
+      },
+      'curve-style': 'haystack',
+      'haystack-radius': 0.3,
+      'line-style': (ele) => (ele.data('relType') === 'hostile' ? 'dashed' : 'solid'),
+    } },
+    { selector: ':selected', style: { 'border-color': '#d9a441', 'border-width': 3 } },
+  ]
+}
+
+// 切换阵营/角色着色：只重应用样式表，不重跑布局
+function setColorMode(m) {
+  _colorMode = m
+  colorMode.value = m
+  if (cy) cy.style(makeStyle('full'))
 }
 
 /* ── 渲染（核心逻辑严格移植旧版 renderGraph） ── */
@@ -407,7 +544,10 @@ function renderGraph(nodes, edges, mode, centerNode) {
     const r = classifyRelation(e.relation || '')
     const k = (e.weight || 1) >= 3 || r === 'hostile'
     const ind = mode === 'focus' && centerNode && e.source !== centerNode && e.target !== centerNode
-    els.push({ data: { id: 'e_' + e.source + '_' + e.target, source: e.source, target: e.target, relType: r, isKey: k, weight: e.weight || 1, isIndirect: ind || false } })
+    // 两端同社区则记录社区 id（阵营着色时同阵营边上色），否则 -1
+    const c1 = _nodeToCommunity[e.source], c2 = _nodeToCommunity[e.target]
+    const eComm = (c1 !== undefined && c1 === c2) ? c1 : -1
+    els.push({ data: { id: 'e_' + e.source + '_' + e.target, source: e.source, target: e.target, relType: r, isKey: k, weight: e.weight || 1, isIndirect: ind || false, comm: eComm } })
   })
   sn.forEach((n) => {
     const dg = fd[n.name] || 0
@@ -423,38 +563,10 @@ function renderGraph(nodes, edges, mode, centerNode) {
       else if (se.some((e) => (e.source === centerNode && e.target === n.name) || (e.target === centerNode && e.source === n.name))) fl = 1
       else fl = 2
     }
-    els.push({ data: { id: n.name, label: n.name, role: n.role || '未知', mention: n.mention_count || 0, deg: dg || 0, size: Math.round(sz), fl } })
+    els.push({ data: { id: n.name, label: n.name, role: n.role || '未知', mention: n.mention_count || 0, deg: dg || 0, size: Math.round(sz), fl, comm: _nodeToCommunity[n.name] !== undefined ? _nodeToCommunity[n.name] : -1 } })
   })
 
-  const style = [
-    { selector: 'node', style: {
-      label: 'data(label)',
-      'font-size': (ele) => Math.max(4, Math.min(11, ele.data('size') * 0.22)) + 'px',
-      color: '#37352f',
-      'text-valign': 'bottom',
-      'text-halign': 'center',
-      'text-margin-y': 1,
-      width: 'data(size)',
-      height: 'data(size)',
-      'border-width': (ele) => (ele.data('fl') === 0 ? 3 : (ele.data('deg') > 10 ? 2 : 1)),
-      'border-color': (ele) => (ele.data('fl') === 0 ? '#d9a441' : '#ffffff'),
-      'background-color': (ele) => nFill[ele.data('role')] || '#9b9a97',
-      'min-zoomed-font-size': 1,
-      'z-index': (ele) => -ele.data('size'),
-    } },
-    { selector: 'edge', style: {
-      width: (ele) => Math.max(0.1, Math.min(1, (ele.data('weight') || 1) * 0.12)),
-      'line-color': (ele) => eColor[ele.data('relType')] || '#9b9a97',
-      opacity: (ele) => {
-        if (mode === 'focus' && ele.data('isIndirect')) return 0.01
-        return ele.data('isKey') ? 0.3 : 0.03
-      },
-      'curve-style': 'haystack',
-      'haystack-radius': 0.3,
-      'line-style': (ele) => (ele.data('relType') === 'hostile' ? 'dashed' : 'solid'),
-    } },
-    { selector: ':selected', style: { 'border-color': '#d9a441', 'border-width': 3 } },
-  ]
+  const style = makeStyle(mode)
 
   const instance = cytoscape({ container, elements: els, style, minZoom: 0.02, maxZoom: 8 })
   cy = instance
@@ -580,6 +692,7 @@ function showNodeDetail(id) {
   detail.name = n.name
   detail.role = n.role || '未知'
   detail.mention = n.mention_count || 0
+  detail.comm = _nodeToCommunity[n.name] !== undefined ? _nodeToCommunity[n.name] : -1
   relAll.value = allEdges.filter((e) => e.source === id || e.target === id)
   relPage.value = 0
   detail.visible = true

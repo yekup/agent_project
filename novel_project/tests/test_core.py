@@ -1475,24 +1475,84 @@ class TestCoordinatorPrecomputed(unittest.TestCase):
         self.assertEqual(result["rounds"], 1)
 
     def test_without_precomputed_calls_llm(self):
-        """不传预计算 → detect/decompose 各调一次 LLM，行为与旧版一致"""
+        """不传预计算 → 合并规划一次 LLM 调用同时产出 intent 和 steps"""
         from unittest.mock import patch
         coordinator = self._make_coordinator()
 
-        def fake_llm(messages):
+        def fake_llm(messages, **kw):
             prompt = messages[0]["content"]
-            if "判断用户的问题" in prompt:
-                return "character"
-            if "拆解" in prompt:
-                return '[{"step": 1, "description": "搜索赵玖的信息"}]'
+            if "完成两件事" in prompt:  # PLAN_PROMPT 合并规划
+                return '{"intent": "character", "steps": [{"step": 1, "description": "搜索赵玖的信息"}]}'
             return None
 
         with patch("core.agents.coordinator.call_llm", side_effect=fake_llm) as mock_llm:
             result = coordinator.run("赵玖是怎样的人")
-        self.assertEqual(mock_llm.call_count, 2)
+        self.assertEqual(mock_llm.call_count, 1)
         self.assertEqual(result["intent"], "character")
         self.assertEqual(result["steps"][0]["description"], "搜索赵玖的信息")
         self.assertEqual(result["final_report"], "最终报告")
+
+    def test_steps_precomputed_intent_missing_uses_intent_prompt(self):
+        """只传 steps 不传 intent → 走单用途意图识别，不覆盖预计算 steps"""
+        from unittest.mock import patch
+        coordinator = self._make_coordinator()
+        steps = [{"step": 1, "description": "搜索赵玖的信息"}]
+
+        def fake_llm(messages, **kw):
+            if "判断用户的问题" in messages[0]["content"]:  # INTENT_PROMPT
+                return "character"
+            return None
+
+        with patch("core.agents.coordinator.call_llm", side_effect=fake_llm) as mock_llm:
+            result = coordinator.run("赵玖是怎样的人", steps=steps)
+        self.assertEqual(mock_llm.call_count, 1)
+        self.assertEqual(result["intent"], "character")
+        self.assertEqual(result["steps"], steps)
+
+
+class TestMaterialPoolDeferredCompress(unittest.TestCase):
+    """材料池延迟压缩：首轮不触发 LLM 压缩（单轮流程省 2 次调用/轮），
+    第二轮加入时才压缩上一轮；超轮丢弃前补算归档摘要"""
+
+    def _materials(self, tag):
+        # 超过 _summarize 的 200 字 LLM 触发下限
+        return [{"step": 1, "description": tag, "result": f"{tag}的检索材料。" + "内容" * 150}]
+
+    def test_first_round_no_llm_call(self):
+        from core.material_pool import MaterialPool
+        with patch("core.material_pool.call_llm") as m:
+            pool = MaterialPool(llm_compress=True)
+            pool.add_round(self._materials("第一轮"))
+        self.assertFalse(m.called, "首轮不应触发压缩 LLM 调用")
+        # 单轮 get_effective 返回全量原文（不依赖摘要）
+        self.assertIn("第一轮的检索材料", pool.get_effective())
+
+    def test_second_round_compresses_first(self):
+        from core.material_pool import MaterialPool
+        with patch("core.material_pool.call_llm", side_effect=["摘要", "极简摘要"]) as m:
+            pool = MaterialPool(llm_compress=True)
+            pool.add_round(self._materials("第一轮"))
+            pool.add_round(self._materials("第二轮"))
+        self.assertEqual(m.call_count, 2)  # _summarize + _summarize_short，都是第一轮
+        self.assertEqual(pool._rounds[0].summary, "摘要")
+        self.assertEqual(pool._rounds[1].summary, "")  # 当前轮不压缩
+        # 两轮时 get_effective 带第一轮摘要 + 两轮全量
+        eff = pool.get_effective()
+        self.assertIn("极简摘要", eff)
+        self.assertIn("第二轮的检索材料", eff)
+
+    def test_drop_oldest_backfills_archive_summary(self):
+        from core.material_pool import MaterialPool
+        # max_rounds=2：第三轮加入时第一轮被丢弃，丢弃前补算极简摘要
+        with patch("core.material_pool.call_llm", side_effect=lambda *a, **kw: "压缩") as m:
+            pool = MaterialPool(llm_compress=True, max_rounds=2)
+            pool.add_round(self._materials("一"))
+            pool.add_round(self._materials("二"))
+            calls_after_2 = m.call_count
+            pool.add_round(self._materials("三"))
+        self.assertGreater(m.call_count, calls_after_2)
+        self.assertTrue(any("第1轮" in a for a in pool._archived))
+        self.assertEqual(len(pool._rounds), 2)
 
 
 class TestSearchAllCompleteness(unittest.TestCase):

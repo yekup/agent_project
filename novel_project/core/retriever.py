@@ -51,6 +51,8 @@ class NovelRetriever:
         try:
             from core.chunker import VectorStoreIndexer, NOVEL_KEY_TO_SHORT
             self._vector_indexer = VectorStoreIndexer()
+            # 主线程预热初始化（ONNX 模型加载），避免并行检索线程竞争首次导入
+            self._vector_indexer._init_db()
             # 向量库 metadata 的 novel_key 用短名（shaosong/doupo/...），
             # 与 self._novel_key（wiki 全名）做一次映射
             self._vector_key = NOVEL_KEY_TO_SHORT.get(self._novel_key, self._novel_key)

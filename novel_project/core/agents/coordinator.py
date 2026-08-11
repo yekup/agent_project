@@ -76,6 +76,31 @@ DECOMPOSE_PROMPT = """用户有一个{intent}类型的问题。
 [{{"step": 1, "description": "..."}}]
 """
 
+# 意图识别 + 任务拆解合并为一次 LLM 调用（省一次 API 往返，约 5-8s）。
+# 输出 JSON 对象而非分开两次调用，信息量是严格超集，不损准确度。
+PLAN_PROMPT = """分析用户的问题，完成两件事：判断问题类型，并拆解检索步骤。
+
+类型说明：
+- character: 分析单个人物（性格、形象、经历、评价）
+- relationship: 分析两个以上人物的关系（关系变化、对比）
+- summary: 总结类（全书画像、整体评价、排行榜）
+- complex: 复杂推理（假设性问题、多步推理、需要综合分析）
+- other: 其他
+
+Researcher 可以执行以下四类检索：
+1. 搜索 Wiki（章节摘要和人物信息）
+2. 搜索知识图谱（人物关系）
+3. 搜索原文（章节正文）
+4. 向量语义搜索（全文语义匹配，适合找不到确切关键词时使用）
+不要假设 Researcher 可以访问互联网或其他外部资源。
+
+问题：{query}
+
+只返回 JSON 对象，不要其他文字：
+{{"intent": "类型", "steps": [{{"step": 1, "description": "..."}}]}}
+steps 为 2-4 个检索步骤。
+"""
+
 
 # ── LangGraph 状态定义 ──────────────────────────────────────────────
 
@@ -110,19 +135,48 @@ def _emit(coordinator, event: dict) -> None:
 
 
 def _node_detect_intent(state: CoordinatorState, coordinator) -> dict:
-    """节点: 意图识别（调用方已预算时跳过，避免重复 LLM 调用）"""
+    """节点: 意图识别 + 任务拆解（合并为一次 LLM 调用，省一次 API 往返）"""
     if state.get("intent"):
         logger.info(f"  [Coordinator] 意图识别: {state['intent']}（预计算）")
         return {}
     query = state["query"]
-    prompt = INTENT_PROMPT.format(query=query)
-    response = call_llm([{"role": "user", "content": prompt}])
-    intent = (response or "").strip().lower()
+
+    # 步骤已预计算、仅缺意图 → 退回单用途意图识别
+    if state.get("steps"):
+        prompt = INTENT_PROMPT.format(query=query)
+        response = call_llm([{"role": "user", "content": prompt}])
+        intent = (response or "").strip().lower()
+        if intent not in ["character", "relationship", "summary", "complex", "other"]:
+            intent = "other"
+        logger.info(f"  [Coordinator] 意图识别: {intent}")
+        _emit(coordinator, {"event": "progress", "message": f"意图识别: {intent}"})
+        return {"intent": intent}
+
+    # 正常路径：一次调用同时产出意图和检索步骤
+    response = call_llm(
+        [{"role": "user", "content": PLAN_PROMPT.format(query=query)}],
+        response_format={"type": "json_object"},
+    )
+    intent, steps = "other", []
+    try:
+        obj = json.loads(response or "")
+        intent = str(obj.get("intent", "")).strip().lower()
+        steps = obj.get("steps") or []
+    except Exception:
+        pass
     if intent not in ["character", "relationship", "summary", "complex", "other"]:
         intent = "other"
-    logger.info(f"  [Coordinator] 意图识别: {intent}")
-    _emit(coordinator, {"event": "progress", "message": f"意图识别: {intent}"})
-    return {"intent": intent}
+
+    result = {"intent": intent}
+    if steps:
+        for i, s in enumerate(steps):
+            if "step" not in s:
+                s["step"] = i + 1
+        result["steps"] = steps
+    logger.info(f"  [Coordinator] 规划: {intent}, {len(steps)} 个检索步骤")
+    _emit(coordinator, {"event": "progress",
+                        "message": f"意图识别: {intent}" + (f"，{len(steps)} 个检索步骤" if steps else "")})
+    return result
 
 
 def _node_decompose(state: CoordinatorState, coordinator) -> dict:

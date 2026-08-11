@@ -15,9 +15,7 @@ except ImportError:
     pass
 
 from fastapi import FastAPI, Request
-from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
-from jinja2 import Environment, FileSystemLoader
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, BASE_DIR)
@@ -59,16 +57,6 @@ try:
 except ImportError:
     import logging as logger
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-
-# ── 模板 ────────────────────────────────────────────────────────────
-template_dir = os.path.join(BASE_DIR, "web", "templates")
-env = Environment(loader=FileSystemLoader(template_dir), autoescape=True)
-
-def render_template(name: str, **kwargs):
-    template = env.get_template(name)
-    # no-cache：页面 HTML 每次重新请求，避免浏览器长期缓存旧页面
-    # （旧页面内联脚本不带 token 调 /api，会被权限中间件 401 踢回登录页）
-    return HTMLResponse(template.render(**kwargs), headers={"Cache-Control": "no-cache"})
 
 # ── 配置加载 ─────────────────────────────────────────────────────────
 def load_config():
@@ -113,8 +101,6 @@ async def lifespan(app: FastAPI):
     logger.info("网文 GraphRAG 分析系统关闭")
 
 app = FastAPI(title="网文 GraphRAG 分析系统", lifespan=lifespan)
-
-app.mount("/static", StaticFiles(directory=os.path.join(BASE_DIR, "web", "static")), name="static")
 
 from web.routes import agent_routes
 from web.routes import auth_routes

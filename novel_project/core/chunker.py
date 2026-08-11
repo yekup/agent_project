@@ -29,6 +29,7 @@ import logging
 import math
 import os
 import re
+import threading
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional
@@ -505,11 +506,12 @@ class VectorStoreIndexer:
         results = indexer.search("赵玖和岳飞的关系")
     """
 
+    _init_lock = threading.Lock()  # _init_db 双重检查锁（并行检索线程安全）
+
     def __init__(self, collection_name: str = "novel_chunks"):
         self.collection_name = collection_name
         self._collection = None
         self._embedding_fn = None
-
     @staticmethod
     def _pick_embedding():
         """
@@ -548,25 +550,29 @@ class VectorStoreIndexer:
             return None, "default-onnx", ""
 
     def _init_db(self):
-        """延迟初始化 ChromaDB"""
+        """延迟初始化 ChromaDB（线程安全：并行检索线程会同时进入，
+        onnxruntime 在 Windows 下并发首导入会抛 ImportError 假报"未安装"）"""
         if self._collection is not None:
             return
-        try:
-            import chromadb
+        with VectorStoreIndexer._init_lock:
+            if self._collection is not None:  # 双重检查
+                return
+            try:
+                import chromadb
 
-            client = chromadb.PersistentClient(
-                path=str(Path(__file__).resolve().parent.parent / "data" / "chroma")
-            )
-            # 嵌入维度随模型不同（BGE 1024 / 默认 ONNX 384），
-            # 不同模型必须分 collection 存储，不能混写
-            self._embedding_fn, emb_name, suffix = self._pick_embedding()
-            self._collection = client.get_or_create_collection(
-                name=f"{self.collection_name}{suffix}",
-                embedding_function=self._embedding_fn,
-                metadata={"hnsw:space": "cosine", "embedding_model": emb_name},
-            )
-        except ImportError:
-            logger.warning("chromadb 未安装，向量索引不可用")
+                client = chromadb.PersistentClient(
+                    path=str(Path(__file__).resolve().parent.parent / "data" / "chroma")
+                )
+                # 嵌入维度随模型不同（BGE 1024 / 默认 ONNX 384），
+                # 不同模型必须分 collection 存储，不能混写
+                self._embedding_fn, emb_name, suffix = self._pick_embedding()
+                self._collection = client.get_or_create_collection(
+                    name=f"{self.collection_name}{suffix}",
+                    embedding_function=self._embedding_fn,
+                    metadata={"hnsw:space": "cosine", "embedding_model": emb_name},
+                )
+            except ImportError:
+                logger.warning("chromadb 未安装，向量索引不可用")
 
     def index_novel(self, novel_key: str, chunks: list[Chunk]) -> dict:
         """将分块结果写入向量库"""

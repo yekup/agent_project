@@ -156,6 +156,23 @@ async def rebuild_multi_index():
     return {"status": "ok", "keywords": len(index._index)}
 
 
+def _compile_dialogue_wiki(sid: str, novel_key: str, mem) -> None:
+    """会话记录 → 对话 Wiki 编译（后台任务用，同步函数，异常不冒泡）"""
+    try:
+        record_path = os.path.join(mem.memory_dir, "sessions", f"{sid}.json")
+        if not os.path.exists(record_path):
+            logger.warning("[DialogueCompiler] 会话文件不存在: %s", record_path)
+            return
+        with open(record_path, "r", encoding="utf-8") as f:
+            record = json.load(f)
+        from core.dialogue_compiler import compile_session, save_dialogue_wiki
+        entry = compile_session(record)
+        if entry is not None:
+            save_dialogue_wiki(novel_key, entry)
+    except Exception:
+        logger.exception("[DialogueCompiler] 后台编译异常")
+
+
 @router.post("/ask")
 async def ask_agent(body: AgentQueryRequest, background_tasks: BackgroundTasks = None):
     from core.semantic_cache import get_cache as get_semantic_cache
@@ -210,24 +227,9 @@ async def ask_agent(body: AgentQueryRequest, background_tasks: BackgroundTasks =
     # 写入完整对话原料
     memory.append_turn(session_id, body.query, report, novel, review_passed, entities)
 
-    # 只有 review 通过的问答才触发对话 Wiki 编译（日志：报错日志落盘，但编译异常不阻塞响应）
+    # 只有 review 通过的问答才触发对话 Wiki 编译（后台任务，异常不阻塞响应）
     if review_passed and report and background_tasks is not None:
-        def _compile_in_background(sid, novel_key, mem, r):
-            try:
-                record_path = os.path.join(mem.memory_dir, "sessions", f"{sid}.json")
-                if not os.path.exists(record_path):
-                    logger.warning("[DialogueCompiler] 会话文件不存在: %s", record_path)
-                    return
-                with open(record_path, "r", encoding="utf-8") as f:
-                    record = json.load(f)
-                from core.dialogue_compiler import compile_session, save_dialogue_wiki
-                entry = compile_session(record)
-                if entry is not None:
-                    save_dialogue_wiki(novel_key, entry)
-            except Exception:
-                logger.exception("[DialogueCompiler] 后台编译异常")
-
-        background_tasks.add_task(_compile_in_background, session_id, novel, memory, result)
+        background_tasks.add_task(_compile_dialogue_wiki, session_id, novel, memory)
 
     # 写入语义缓存（key 带书籍前缀，与查询时一致）
     if report:
@@ -247,6 +249,7 @@ async def ask_agent_stream(body: AgentQueryRequest):
     from core.agents.writer import Writer
     from core.agents.reviewer import Reviewer
     from core.agents.coordinator import Coordinator
+    from core.memory import extract_entities_from_graph
     from fastapi.responses import StreamingResponse
     import asyncio
 
@@ -262,15 +265,55 @@ async def ask_agent_stream(body: AgentQueryRequest):
 
         async def work():
             try:
+                # 语义缓存：命中则跳过整条 Agent 链路（与 /api/ask 行为一致）。
+                # key 带书籍前缀，避免跨书串答
+                from core.semantic_cache import get_cache as get_semantic_cache
+                cache = get_semantic_cache()
+                cache_key = f"[{novel}] {body.query}"
+                cached = cache.get(cache_key)
+                if cached is not None:
+                    logger.info(f"  [SemanticCache] ✅ 缓存命中: {body.query[:30]}...")
+                    session_id = body.session_id or memory.new_session(body.query, novel=novel)
+                    # 缓存命中不编译（无增量），只记完整对话原料
+                    entities = extract_entities_from_graph(body.query, cached, novel)
+                    memory.append_turn(session_id, body.query, cached, novel, True, entities)
+                    cb({"event": "progress", "message": "命中语义缓存，直接返回"})
+                    cb({"event": "result", "report": cached, "rounds": 0,
+                        "intent": "cached", "cached": True, "session_id": session_id})
+                    return
+
                 retriever = await run_in_threadpool(_get_retriever, novel)
                 coordinator = Coordinator(Researcher(retriever), Writer(), Reviewer())
                 result = await run_in_threadpool(
                     coordinator.run, body.query, event_cb=cb)
+                report = result.get("final_report", "")
+                # 写入语义缓存（旧版流式路由只读不写，缓存永远不会命中）
+                if report:
+                    cache.put(cache_key, report)
+
+                # 会话记忆 + 对话 Wiki 编译（与 /api/ask 对齐：
+                # 旧流式路由不写记忆，多轮对话和对话 Wiki 在流式入口下静默失效）
+                session_id = body.session_id or memory.new_session(body.query, novel=novel)
+                review_passed = result.get("review_result", {}).get("passed", False)
+                entities = extract_entities_from_graph(body.query, report, novel)
+                memory.append_turn(session_id, body.query, report, novel, review_passed, entities)
+
+                # 只有 review 通过才触发对话 Wiki 编译（后台执行，不阻塞 SSE 收尾）
+                if review_passed and report:
+                    async def _bg_compile(sid=session_id):
+                        try:
+                            await run_in_threadpool(
+                                _compile_dialogue_wiki, sid, novel, memory)
+                        except Exception:
+                            logger.exception("[DialogueCompiler] 后台编译异常")
+                    asyncio.create_task(_bg_compile())
+
                 cb({"event": "result",
-                    "report": result.get("final_report", ""),
+                    "report": report,
                     "rounds": result.get("rounds", 0),
                     "intent": result.get("intent", ""),
-                    "review": result.get("review_result", {})})
+                    "review": result.get("review_result", {}),
+                    "session_id": session_id})
             except Exception as e:
                 logger.exception("流式问答失败")
                 cb({"event": "error", "message": str(e)})
@@ -347,6 +390,7 @@ async def list_novels():
     # 显示名称映射
     display_names = {
         "shaosong": "绍宋",
+        "绍宋": "绍宋",
         "斗破苍穹": "斗破苍穹",
         "神印王座": "神印王座",
     }

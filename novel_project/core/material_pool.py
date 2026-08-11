@@ -83,10 +83,14 @@ class MaterialPool:
         )
         self._rounds.append(mr)
 
-        # 更新全局摘要
-        if self._llm_compress and mr.text:
-            mr.summary = self._summarize(mr.text)
-            mr.summary_short = self._summarize_short(mr.text)
+        # 延迟压缩：压缩"已成历史"的上一轮，而不是当前轮。
+        # 单轮流程（多数问答一次通过）里当前轮的摘要永远不会被读到，
+        # 每轮白付 2 次 LLM 调用（实测占研究阶段 15-25s）。
+        if self._llm_compress and len(self._rounds) >= 2:
+            prev = self._rounds[-2]
+            if prev.text and not prev.summary:
+                prev.summary = self._summarize(prev.text)
+                prev.summary_short = self._summarize_short(prev.text)
             # 合并到全局摘要
             sources = [r.summary_short for r in self._rounds if r.summary_short]
             if len(sources) >= 2:
@@ -94,9 +98,11 @@ class MaterialPool:
                 if len(combined) > 300:
                     self._global_summary = self._summarize_short(combined)
 
-        # 超出轮数限制时丢弃最旧轮（其极简摘要归档保留，不丢结论）
+        # 超出轮数限制时丢弃最旧轮（归档前补算极简摘要，不丢结论）
         while len(self._rounds) > self._max_rounds:
             dropped = self._rounds.pop(0)
+            if self._llm_compress and dropped.text and not dropped.summary_short:
+                dropped.summary_short = self._summarize_short(dropped.text)
             if dropped.summary_short:
                 self._archived.append(f"第{dropped.round_num}轮: {dropped.summary_short}")
 
