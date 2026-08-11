@@ -322,21 +322,26 @@ class NovelRetriever:
         """
         第 3 级：向量检索原文（混合检索）。
 
-        两条腿：
+        三条腿：
         1. 纯向量语义检索（默认 ONNX 嵌入对中文较弱，单靠它召回率低）
         2. 实体精确腿：查询中命中图谱节点的实体名，用 where_document
            限定分块必须包含实体名，再按向量分排序——保证实体必现
+        3. 实体共现腿（≥2 实体时）：限定分块同时包含前两个实体——
+           关系类问题的关键证据通常要求两实体同现于同一上下文
 
-        两腿结果按 RRF（Reciprocal Rank Fusion）融合排序。
+        各腿结果按 RRF（Reciprocal Rank Fusion）融合排序。
         """
         if self._vector_indexer is None:
             return [{"text": "向量库未就绪", "metadata": {}, "score": 0}]
 
         try:
-            # 第 1 腿：纯向量（限定本书，避免多书索引后跨书串扰）
-            legs = [self._vector_indexer.search(query, top_k=top_k, novel_key=self._vector_key) or []]
+            # legs: (命中列表, RRF 权重)。共现腿权重最高（双实体同现的块
+            # 对关系类问题最可靠），实体腿次之，纯向量腿为基线
+            legs: list[tuple[list, float]] = [
+                (self._vector_indexer.search(query, top_k=top_k, novel_key=self._vector_key) or [], 1.0)
+            ]
 
-            # 第 2 腿：实体精确（图谱节点名出现在查询中 → 限定包含）
+            # 实体腿：图谱节点名出现在查询中 → 限定包含
             graph = getattr(self, "graph", None)
             if graph is not None:
                 entities = []
@@ -346,14 +351,15 @@ class NovelRetriever:
                         entities.append(clean)
                 for e in entities[:3]:
                     hits = self._vector_indexer.search(query, top_k=5, novel_key=self._vector_key, contains=e) or []
-                    legs.append(hits)
+                    legs.append((hits, 2.0))
+                if len(entities) >= 2:
+                    hits = self._vector_indexer.search(query, top_k=5, novel_key=self._vector_key, contains=entities[:2]) or []
+                    legs.append((hits, 3.0))
 
-            # RRF 融合（保留每条命中原有的 text/metadata/score 字段；
-            # 实体腿权重 ×2：实体必现的 chunks 对实体类问题更可靠）
+            # RRF 融合（保留每条命中原有的 text/metadata/score 字段）
             fused: dict[str, float] = {}
             by_id: dict[str, dict] = {}
-            for leg_idx, leg in enumerate(legs):
-                leg_weight = 1.0 if leg_idx == 0 else 2.0
+            for leg, leg_weight in legs:
                 for rank, hit in enumerate(leg):
                     cid = hit.get("chunk_id") or hit.get("text", "")[:50]
                     if not cid or "未就绪" in str(hit.get("text", "")):

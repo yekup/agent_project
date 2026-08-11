@@ -6,8 +6,10 @@
 
 用法:
     cd novel_project
-    python scripts/vector_recall_eval.py                 # hybrid：retriever 混合检索
-    python scripts/vector_recall_eval.py --mode vector   # 纯向量基线
+    python scripts/vector_recall_eval.py                          # hybrid：retriever 混合检索（绍宋）
+    python scripts/vector_recall_eval.py --mode vector            # 纯向量基线
+    python scripts/vector_recall_eval.py --book doupo             # 斗破苍穹
+    python scripts/vector_recall_eval.py --book shenyin           # 神印王座
 """
 from __future__ import annotations
 
@@ -20,10 +22,23 @@ import sys
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, BASE_DIR)
 
-GOLDEN_PATH = os.path.join(BASE_DIR, "data", "eval", "golden", "shaosong.json")
-WIKI_PATH = os.path.join(BASE_DIR, "data", "wiki", "绍宋作者：榴弹怕水_hierarchical.json")
-GRAPH_PATH = os.path.join(BASE_DIR, "data", "wiki", "绍宋作者：榴弹怕水_graph.json")
-NOVEL_PATH = os.path.join(BASE_DIR, "data", "processed", "《绍宋》作者：榴弹怕水.json")
+# 短名 → (wiki 文件名前缀, processed JSON 文件名)
+BOOKS = {
+    "shaosong": ("绍宋作者：榴弹怕水", "《绍宋》作者：榴弹怕水"),
+    "doupo": ("斗破苍穹作者：天蚕土豆", "《斗破苍穹》作者：天蚕土豆"),
+    "shenyin": ("神印王座作者：唐家三少", "《神印王座》作者：唐家三少"),
+}
+
+
+def _paths(book: str) -> tuple[str, str, str, str]:
+    """返回 (golden, wiki, graph, novel) 四个路径"""
+    name, fullname = BOOKS[book]
+    return (
+        os.path.join(BASE_DIR, "data", "eval", "golden", f"{book}.json"),
+        os.path.join(BASE_DIR, "data", "wiki", f"{name}_hierarchical.json"),
+        os.path.join(BASE_DIR, "data", "wiki", f"{name}_graph.json"),
+        os.path.join(BASE_DIR, "data", "processed", f"{fullname}.json"),
+    )
 
 
 def _entities_of(item: dict) -> tuple[list[str], str] | None:
@@ -52,19 +67,25 @@ def _hit(entities: list[str], mode: str, hits: list[dict], k: int) -> bool:
 def main():
     parser = argparse.ArgumentParser(description="向量召回率评估")
     parser.add_argument("--mode", choices=["vector", "hybrid"], default="hybrid")
-    parser.add_argument("--golden", default=GOLDEN_PATH)
+    parser.add_argument("--book", choices=list(BOOKS), default="shaosong")
+    parser.add_argument("--golden", default=None, help="自定义黄金集路径（覆盖 --book）")
     args = parser.parse_args()
 
-    with open(args.golden, "r", encoding="utf-8") as f:
+    golden_path, wiki_path, graph_path, novel_path = _paths(args.book)
+    if args.golden:
+        golden_path = args.golden
+
+    with open(golden_path, "r", encoding="utf-8") as f:
         golden = json.load(f)
 
     if args.mode == "vector":
         from core.chunker import VectorStoreIndexer
         indexer = VectorStoreIndexer()
-        search_fn = lambda q, k: indexer.search(q, top_k=k)  # noqa: E731
+        # 必须按书过滤：多书共用同一 collection，不过滤会跨书串扰
+        search_fn = lambda q, k: indexer.search(q, top_k=k, novel_key=args.book)  # noqa: E731
     else:
         from core.retriever import NovelRetriever
-        retriever = NovelRetriever(WIKI_PATH, GRAPH_PATH, NOVEL_PATH)
+        retriever = NovelRetriever(wiki_path, graph_path, novel_path)
         search_fn = lambda q, k: retriever.search_by_vector(q, top_k=k)  # noqa: E731
 
     ks = (1, 3, 5)
@@ -79,7 +100,7 @@ def main():
         rows.append((item["query"], item["metadata"]["type"], recalls))
 
     print("=" * 78)
-    print(f"mode={args.mode}  entity queries={len(rows)}")
+    print(f"book={args.book}  mode={args.mode}  entity queries={len(rows)}")
     print("=" * 78)
     print(f"{'Query':<46}{'Type':<20}{'k=1':>5}{'k=3':>5}{'k=5':>5}")
     print("-" * 78)

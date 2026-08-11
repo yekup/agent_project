@@ -618,7 +618,7 @@ class VectorStoreIndexer:
         query: str,
         top_k: int = 20,
         novel_key: str | None = None,
-        contains: str | None = None,
+        contains: str | list[str] | None = None,
     ) -> list[dict]:
         """
         语义搜索分块。
@@ -627,14 +627,24 @@ class VectorStoreIndexer:
             query: 搜索文本
             top_k: 返回条数
             novel_key: 限定小说（可选）
-            contains: 限定分块文本必须包含该子串（可选，实体精确腿用）
+            contains: 限定分块文本必须包含的子串（可选，实体精确腿用）。
+                传 list 时要求全部子串共现（$and，双/多实体共现腿用）
         """
         self._init_db()
         if self._collection is None:
             return [{"text": "向量库未就绪", "metadata": {}}]
 
+        terms = []
+        if contains:
+            terms = [contains] if isinstance(contains, str) else [t for t in contains if t]
+
         where = {"novel_key": novel_key} if novel_key else None
-        where_document = {"$contains": contains} if contains else None
+        if not terms:
+            where_document = None
+        elif len(terms) == 1:
+            where_document = {"$contains": terms[0]}
+        else:
+            where_document = {"$and": [{"$contains": t} for t in terms]}
         results = self._collection.query(
             query_texts=[query],
             n_results=top_k,
@@ -645,10 +655,10 @@ class VectorStoreIndexer:
         hits = []
         for i in range(len(results["ids"][0])):
             doc = results["documents"][0][i]
-            if contains and contains in doc:
-                # 实体腿：截取窗口以实体首次出现处为中心，
-                # 避免 [:500] 截断导致返回文本里看不到目标实体
-                pos = doc.find(contains)
+            # 实体腿：截取窗口以实体首次出现处为中心，
+            # 避免 [:500] 截断导致返回文本里看不到目标实体
+            pos = next((doc.find(t) for t in terms if doc.find(t) >= 0), -1)
+            if pos >= 0:
                 start = max(0, pos - 200)
                 doc = doc[start:start + 500]
             else:
