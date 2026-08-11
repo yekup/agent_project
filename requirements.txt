@@ -22,9 +22,11 @@ dashscope==1.26.3
 
 # ===== Vector/Embedding =====
 chromadb==1.5.9
-# 中文嵌入模型（BGE-large-zh-v1.5）；缺失时 VectorStoreIndexer 自动回退 chromadb 默认 ONNX
-torch==2.12.1
-sentence-transformers==5.6.0
+# 可选：中文嵌入模型（BGE-large-zh-v1.5，NOVEL_EMBEDDING=bge 时启用）。
+# 缺失时 VectorStoreIndexer 自动回退 chromadb 默认 ONNX。
+# 体积大（torch 含 CUDA 依赖约 2.5GB），默认不装，需要时取消注释：
+# torch==2.12.1
+# sentence-transformers==5.6.0
 
 # ===== Graph =====
 networkx==3.6.1
